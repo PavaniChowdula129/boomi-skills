@@ -1,0 +1,2002 @@
+# Boomi Error Reference
+
+A comprehensive guide to Boomi error patterns, silent failures, and issues that don't throw errors but cause wrong behavior. **Read this early in any troubleshooting effort** - most Boomi debugging dead-ends trace back to one of these known issues.
+
+**When to use this guide:**
+- Variables appearing literally in output instead of being substituted
+- Deployments that don't seem to update runtime behavior
+- API authentication failures with no error messages
+- Components landing in wrong folders despite configuration
+
+## Contents
+- Quick Diagnostic Guide — symptom to issue number
+- Quick Reference Index — every issue with frequency and detection mode
+- Numbered issue sections — full detail, in index order
+
+---
+
+## Quick Diagnostic Guide
+
+**Symptoms → Likely Issue:**
+
+| Symptom | Check Issue # |
+|---------|----------------|
+| Variables appear literally in output | #1 (Quote Escaping) |
+| `can't parse argument number` error at execution | #1 (Quote Escaping) |
+| API authentication failures (no error) | #2 (Environment Variables) |
+| Subprocess updates not taking effect | #3 (Deployment Dependency) |
+| Map output ignored by connector | #4 (Connector Parameters) |
+| GET request errors with body | #5 (REST GET Clearing) |
+| Components in wrong folder | #7 (Folder Placement) |
+| XML validation errors during push | #8 (Schema Mistakes) |
+| Stack overflow in map editor | #9 (Map Function Attributes) |
+| GUI label overlap | #10 (Layout Spacing) |
+| "null" displays in GUI | #11 (Display Attributes) |
+| Test data in production | #12 (Test Payloads) |
+| SSL certificate verification errors | #13 (SSL Verification) |
+| Blank canvas in GUI (JavaScript error) | #14 (Branch numBranches) |
+| NullPointerException at runtime / stack overflow in GUI | #15 (Stop continue Attribute) |
+| Empty action picklist in WSS operation | #16 (WSS actionType) |
+| Script engine null error in Data Process | #17 (Script Engine Attributes) |
+| "No document" error with perExecution | #18 (Notify perExecution) |
+| WSS requests hitting wrong process | #19 (Listener Path Collision) |
+| MCP tool schema changes not applied | #20 (MCP Profile/Schema Sync) |
+| MCP 503 after valid token auth | #21 (MCP 503 After Valid Auth) |
+| EDI map producing split/duplicate documents | #22 (EDI TagList elementKey Target) |
+| Extension values lost after push/deploy | #23 (Empty processOverrides) |
+| DPP value always empty despite being set | #24 (DPP valueType="track") |
+| MANDATORY_ELEMENT_MISSING on map output with identity fields | #25 (Identity Field Mandatory) |
+| Record silently missing from multi-record flat file output | #26 (Identity Value Trimming) |
+| "No data produced from map" on data positioned profile | #26 (Identity Value Trimming) |
+| HTTP 503 on concurrent listener requests / listener queuing | #27 (Listener Process Options) |
+| White screen opening SF operation in GUI | #28 (SF Operation Missing Sorts Element) |
+| Push rejected — "locked by another user" | #29 (Component Locking) |
+| Groovy compile error in ProcessLog after clean push/deploy | #30 (Groovy Runtime Compilation) |
+| Connection override ignored / prod uses wrong host despite useDefault=false | #31 (Inert Override Missing xpath) |
+| Agent step: execution COMPLETE but the agent did nothing | #32 (Agent Step In-Band Errors) |
+| Try/Catch never fires on a failing Agent step | #32 (Agent Step In-Band Errors) |
+| Agent response empty after SSE extraction | #32 (Agent Step In-Band Errors) |
+| `access denied ("java.io.FilePermission" ...)` on a Disk V2 operation | #33 (Disk V2 Directory Outside work/) |
+| `Cannot check for the existence of the file because it cannot be read or written to` | #33 (Disk V2 Directory Outside work/) |
+| Disk V2 write denied on a path outside `work` | #33 (Disk V2 Directory Outside work/) |
+| Profile-keyed extraction empty after a Split Documents step | #34 (Split Preserves Wrapper) |
+| Every document lands on a Route step's Default path after a split | #34 (Split Preserves Wrapper) |
+| "No data produced from map" after a split | #34 (Split Preserves Wrapper) |
+| "ComponentId is invalid" on a component that exists | #35 (Account Default Branch) |
+| Push reports a new version but main never changes | #35 (Account Default Branch) |
+
+---
+
+## Quick Reference Index
+
+| # | Issue | Frequency | Detection |
+|---|--------|-----------|-----------|
+| 1 | Message/Notify Quote Escaping | Very High | Silent - wrong output |
+| 2 | Environment Variables in Component XML | High | Silent - auth failures |
+| 3 | Parent-Subprocess Deployment Dependency | High | Silent - old behavior |
+| 4 | Connector Parameters Override Document Content | Medium | Silent - data ignored |
+| 5 | REST GET Document Clearing | Medium | Runtime error |
+| 6 | REST Connector Profile Type Trap (historical, resolved in V11) | — | No longer occurs on V11+ runtimes |
+| 7 | Folder Placement Verification | High | Design-time visibility |
+| 8 | Common XML Schema Mistakes | High | Design-time validation |
+| 9 | Map Function GUI Requirements | Low | GUI rendering error |
+| 10 | Process Layout Spacing | Low | GUI label overlap |
+| 11 | GUI Display Attributes | Low | "null" displays in GUI |
+| 12 | Subprocess Test Payloads in Production | Medium | Silent - wrong data source |
+| 13 | SSL Certificate Verification in Testing | Medium | Runtime connection failures |
+| 14 | Branch Step Missing numBranches Attribute | Medium | GUI rendering error - blank canvas |
+| 15 | Stop Step Missing continue Attribute | Medium | Runtime NullPointerException + GUI stack overflow |
+| 16 | WSS Start Step Invalid actionType | Medium | GUI rendering error - empty action picklist |
+| 17 | Data Process Script Engine Attributes | Medium | Runtime error - cryptic null error |
+| 18 | Notify perExecution="true" Loses Document Context | Medium | Runtime error - "no document" |
+| 19 | WSS Listener Path Collision | Medium | Silent - wrong process handles requests |
+| 20 | MCP Server Profile/Schema Sync | High | Silent - old validation rules active |
+| 21 | MCP Server 503 After Valid Auth | Medium | Runtime error - 503 after auth |
+| 22 | EDI TagList elementKey Target | High | Runtime - split documents or silent data loss |
+| 23 | Empty processOverrides Destroys Extensions | High | Silent - extension values lost |
+| 24 | DPP valueType="track" Returns Empty | High | Silent - empty string instead of value |
+| 25 | Identity Field mandatory="true" on Map Output | High | Runtime error - MANDATORY_ELEMENT_MISSING |
+| 26 | Identity Value Trimming in Data Positioned Profiles | High | Silent - record missing from output / ERROR if only record |
+| 27 | Listener Process with Default Process Options | High | Silent - queuing/rejection of concurrent requests |
+| 28 | SF Operation Missing Sorts Element | High | GUI white screen opening the operation editor |
+| 29 | Component Locking Blocks All API Updates | Medium | Push fails - HTTP 400 component locked |
+| 30 | Groovy Runtime Compilation | Medium | Runtime error - surfaced only in ProcessLog |
+| 31 | Connection-Override Field Missing xpath | High | Silent - override ignored, baked-in default used |
+| 32 | Agent Step Errors Return In-Band | High | Silent - COMPLETE on failure, Try/Catch never fires |
+| 33 | Disk V2 Directory Outside `work/` on Cloud Runtimes | High | Runtime error - FilePermission denial, clean push and deploy |
+| 34 | Split Documents Preserves Parent Wrapper | High | Silent in Set Properties/Route - ERROR in Map |
+| 35 | Account Default Branch Redirects Unqualified Operations | Low | Silent in the API - writes land on the default branch, main unchanged |
+
+---
+
+## Issue #1: Message/Notify Quote Escaping
+
+**Frequency:** Very High (Most common issue in Boomi development)
+**Detection:** Silent failure - produces literal output instead of variable substitution
+
+### The Problem
+
+Message and Notify steps fail to substitute variables, outputting literal `{1}` instead of actual values. No errors are thrown - output is just wrong.
+
+### Why It Happens
+
+Single quotes toggle between literal mode and variable substitution. Inside single quotes, variables are literal text. GUI auto-escapes; programmatic generation doesn't.
+
+### Wrong Patterns - Variables Appear Literally
+
+```xml
+<!-- Pattern 1: Full JSON wrapped in quotes, variables remain in literal mode -->
+<msgTxt>'{
+  "status": "{1}",
+  "result": "{2}",
+  "data": {3}
+}'</msgTxt>
+<!-- OUTPUT: {"status": "{1}", "result": "{2}", "data": {3}} ← Variables NOT substituted! -->
+```
+
+### Correct Patterns - Variables Get Substituted
+
+```xml
+<!-- Pattern 1: Toggle quotes around each variable -->
+<msgTxt>'{
+  "status": "'{1}'",
+  "result": "'{2}'",
+  "data": '{3}'
+}'</msgTxt>
+<!-- OUTPUT: {"status": "success", "result": "completed", "data": {...}} ← Variables substituted! -->
+
+<!-- Pattern 2: XML doesn't depend on {} so requires no toggling -->
+<msgTxt><?xml version="1.0"?>
+<customer>
+  <email>{1}</email>
+</customer></msgTxt>
+<!-- OUTPUT: <?xml version="1.0"?><customer><email>test@email.com</email></customer> ← Variables substituted! -->
+
+<!-- Pattern 3: No quotes for simple substitution -->
+<msgTxt>Processing order {1} for {2}</msgTxt>
+<!-- OUTPUT: Processing order 12345 for ABC Corp ← Variables substituted! -->
+```
+
+### Quote Toggle Mechanics
+
+- **Default mode**: Variables like `{1}` get substituted
+- **Single quote enters literal mode**: No substitution until next quote
+- **Single quote exits literal mode**: Back to variable substitution
+- **Literal single quote**: Use two single quotes (`''`) to output one quote
+- **Critical Pattern**: `'literal text '{variable}' more literal '{variable2}' end'`
+- **Bare `{}` fails at execution** (push and deploy succeed): `can't parse argument number: ; Caused by: For input string: ""`. Output a literal `{}` with `<msgTxt>'{}'</msgTxt>`.
+
+### Copy-Paste Templates (Working Patterns)
+
+**JSON API Response:**
+```xml
+<msgTxt>'{
+  "id": "'{1}'",
+  "status": "'{2}'",
+  "timestamp": "'{3}'",
+  "data": '{4}'
+}'</msgTxt>
+```
+
+**JSON Error Response:**
+```xml
+<msgTxt>'{
+  "error": "'{1}'",
+  "message": "'{2}'",
+  "timestamp": "'{3}'"
+}'</msgTxt>
+```
+
+**XML Output:**
+```xml
+<msgTxt><order>
+  <id>{1}</id>
+  <status>{2}</status>
+  <customer>{3}</customer>
+</order></msgTxt>
+```
+
+### Pre-Push Checklist
+
+Before pushing Message/Notify steps: Scan for `"{1}"` inside single quotes → Verify quote toggles `"'{1}'"` 
+
+### Affected Steps
+
+- Message steps (`shapetype="message"`)
+- Notify steps (`shapetype="notify"`)
+- Set Properties (different syntax)
+- Map steps (different templating system)
+
+---
+
+## Issue #2: Environment Variables in Component XML
+
+**Frequency:** High
+**Detection:** Silent - API authentication failures with no design-time warnings
+
+### The Problem
+
+Environment variable references like `${APPLICATION_API_KEY}` are stored literally in component XML, causing API calls to fail with authentication errors despite appearing correctly configured.
+
+### Why It Happens
+
+**Project tools DO NOT currently perform variable substitution on XML files** - they read and send component XML as-is to the Boomi platform. The Boomi platform has no access to your local environment variables.
+
+### Wrong Pattern - Causes Silent API Authentication Failures
+
+```xml
+<staticparameter staticproperty="${APPLICATION_API_KEY}"/>
+```
+**RESULT**: Platform stores the literal string `${APPLICATION_API_KEY}` → API calls fail with authentication errors → No design-time warnings
+
+### Correct Pattern - Working API Authentication
+
+```xml
+<staticparameter staticproperty="demo-sk-abc123..."/>
+```
+**RESULT**: Platform executes with actual credential value → API calls succeed
+
+### Critical Rule: No Variable References in XML Components
+
+- **XML Component Files**: Must not contain `${ENV_VAR}` or other variable references — Boomi has no access to local environment variables
+- `{ComponentName}` → **Local XML ONLY** (resolved by agent orchestration during creation)
+
+### Connection Workflow
+
+See `BOOMI_THINKING.md` § Connection Discovery and `cli_tool_reference.md` § Credential Management for the full connection resolution and credential handling workflows.
+
+### Pre-Push Checklist
+
+Before pushing ANY component with credentials:
+1. Search for `${...}` patterns in connection/operation XML files — remove any variable references
+2. Verify `type="password"` fields are not populated with real credentials
+3. Never commit real credentials to version control
+
+---
+
+## Issue #3: Parent-Subprocess Deployment Dependency
+
+**Frequency:** High (Most blocking deployment issue)
+**Detection:** Silent - old behavior persists despite updates
+
+### The Problem
+
+Parent processes snapshot subprocess versions at deployment time. Updating/deploying a subprocess does NOT automatically update parent processes that reference it.
+
+**Real-World Symptoms:**
+- HTTP endpoints return old responses despite subprocess changes
+- Process Call steps execute outdated logic
+- Platform test tool shows new subprocess behavior, but WSS wrapper shows old behavior
+- Multiple "fixes" that don't seem to work (because parent wasn't redeployed)
+
+### Why It Happens
+
+Deploy parent → Runtime captures subprocess v1 → Update subprocess → v2 deployed → Parent still executes v1 (silent failure). Parent deployment creates snapshot; runtime doesn't auto-update dependencies.
+
+### Wrong Pattern - Subprocess Updates Ignored
+
+```bash
+# 1. Update subprocess
+bash <skill-path>/scripts/boomi-component-push.sh subprocess.xml
+bash <skill-path>/scripts/boomi-deploy.sh subprocess.xml
+
+# 2. Test parent process
+curl -X POST "${SERVER_BASE_URL}/ws/simple/endpoint"
+# ← Still executes OLD subprocess version!
+```
+
+### Correct Pattern - Parent Picks Up Subprocess Changes
+
+```bash
+# 1. Update subprocess
+bash <skill-path>/scripts/boomi-component-push.sh subprocess.xml
+# Subprocess does not need to be deployed independently
+
+# 2. CRITICAL: Redeploy parent to pick up subprocess changes
+bash <skill-path>/scripts/boomi-deploy.sh parent-wrapper.xml
+
+# 3. Wait for propagation (10-15 seconds)
+sleep 15
+
+# 4. Now test - parent will use updated subprocess
+curl -X POST "${SERVER_BASE_URL}/ws/simple/endpoint"
+```
+
+### Pre-Deployment Checklist
+
+When updating subprocesses:
+1. Push subprocess updates to platform
+2. **Repackage and redeploy parent** (required to pick up subprocess changes)
+3. Wait 10-15s for propagation
+4. Test parent process
+
+**Applies to ALL component references**: Process Call steps, Map components, Profile references.
+
+**Exception — Standalone subprocess testing**: When testing a subprocess in isolation via `boomi-test-execute.sh` (not through its parent), you must deploy the subprocess independently. The parent deploy rule above applies when testing through the parent; standalone execution requires its own deployment to pick up latest pushes.
+
+---
+
+## Issue #4: Connector Parameters Override Document Content
+
+**Frequency:** Medium
+**Detection:** Silent - document content reaching the connector step is ignored
+
+### The Problem
+
+Parameters configured on connector steps override document content - they don't merge. Document content is completely ignored when connector parameters are set.
+
+**Example:** Salesforce Update with Id parameter ignores document payload from Map step.
+
+### Why It Happens
+
+Connector steps have two ways to provide data:
+1. **Document content** - data from upstream Map/Message steps
+2. **Connector parameters** - configured directly on connector step
+
+When both are present, **parameters win completely** - document content is ignored.
+
+### Wrong Pattern - Document Content Ignored
+
+```xml
+<!-- Map step builds complete payload including Id field -->
+<map mapId="guid-for-salesforce-map"/>
+
+<!-- Connector step also has Id parameter configured -->
+<salesforce connectionId="conn-guid" operationId="op-guid">
+  <dynamicProperties>
+    <propertyvalue childKey="Id" key="recordFields" valueType="track">
+      <trackparameter propertyId="dynamicdocument.DDP_RECORD_ID"/>
+    </propertyvalue>
+  </dynamicProperties>
+</salesforce>
+<!-- Result: Map output IGNORED, only DDP_RECORD_ID is sent (other fields missing!) -->
+```
+
+### Correct Patterns
+
+**Solution Pattern A - Document-Only (Preferred for complex payloads):**
+```xml
+<!-- Map step builds complete payload including all fields -->
+<map mapId="guid-for-salesforce-map"/>
+
+<!-- Connector step with NO parameters - uses document content -->
+<salesforce connectionId="conn-guid" operationId="op-guid">
+  <!-- No dynamicProperties - document flows through normally -->
+</salesforce>
+```
+
+**Solution Pattern B - Parameters-Only:** Set ALL fields via connector parameters (no Map step needed).
+
+### Pre-Push Checklist
+
+Decide: document-only OR parameters-only (never both). Test to verify complete payload sent.
+
+---
+
+## Issue #5: REST GET Document Clearing Pattern
+
+**Frequency:** Medium
+**Detection:** Runtime error or unexpected behavior
+
+### The Problem
+
+REST GET requests should not send document content, but they inherit documents from upstream steps. This can cause execution errors or unexpected API behavior.
+
+### Why It Happens
+
+REST GET connectors:
+- Should send only query parameters, no request body
+- Inherit document content from previous steps in process flow
+- Platform may attempt to send inherited document as request body
+- Some APIs reject GET requests with body content
+
+### Wrong Pattern - Inherited Document Causes Issues
+
+```xml
+<!-- Message step creates document -->
+<message combined="false">
+  <msgTxt>'{"search": "criteria"}'</msgTxt>
+</message>
+
+<!-- REST GET inherits document content -->
+<connector connectionId="conn-guid" operationId="get-op-guid">
+  <!-- GET request may fail due to unexpected body content -->
+</connector>
+```
+
+### Correct Pattern - Clear Document Before GET
+
+```xml
+<!-- Message step creates document for other purposes -->
+<message combined="false">
+  <msgTxt>'{"search": "criteria"}'</msgTxt>
+</message>
+
+<!-- Empty Message step clears document content -->
+<message combined="false">
+  <msgTxt></msgTxt>
+  <msgParameters/>
+</message>
+
+<!-- REST GET connector with clean slate -->
+<connector connectionId="conn-guid" operationId="get-op-guid">
+  <!-- No document content, only query parameters work correctly -->
+</connector>
+```
+
+### When to Use
+
+- Before any REST GET connector that doesn't need request body data
+- When upstream steps create document content that shouldn't be sent to GET endpoint
+- To prevent "request body not allowed" type errors from APIs
+
+### Pre-Push Checklist
+
+For REST GET: Check upstream creates content → Add empty Message step before GET if needed.
+
+---
+
+## Issue #6: REST Connector Profile Type Trap (historical — resolved in V11)
+
+**Status:** Obsolete as of REST Client connector Version 11, which added selectable request/response profiles. Retained only as a note for pre-V11 runtimes.
+
+Before Version 11, REST operations did not support request/response profiles, and older guidance was to strip `requestProfileType`/`responseProfileType`. On Version 11+ these attributes are supported when paired with a profile, and **inert when no profile is linked**. Document the supported pattern instead — see `components/rest_connector_operation_component.md`.
+
+---
+
+## Issue #7: Folder Placement Verification
+
+**Frequency:** High
+**Detection:** Design-time visibility (components appear in wrong folder)
+
+### The Problem
+
+Components land in account root folder instead of designated project folder despite configuration. No errors are thrown - components just appear in wrong location.
+
+### Why It Happens
+
+**Common causes:**
+- Using `folderFullPath` instead of `folderId` attribute in XML
+- Folder ID placeholder patterns (`{FOLDER_GUID}`) not resolved before API call
+- Environment variable `BOOMI_TARGET_FOLDER` not resolving correctly
+- Tool folder resolution logic issues
+- Agent deliberately chose a different parent folder (e.g. to match existing account conventions) — build under `BOOMI_TARGET_FOLDER` when set, unless the user explicitly directed otherwise
+
+### Wrong Patterns
+
+```xml
+<!-- Pattern 1: Using folderFullPath instead of folderId -->
+<bns:Component componentId=""
+               name="Component_Name"
+               type="profile.json"
+               folderFullPath="TargetFolder/ProjectFolder">
+<!-- Result: Component lands in root folder -->
+
+<!-- Pattern 2: Placeholder not resolved -->
+<bns:Component componentId=""
+               name="Component_Name"
+               type="profile.json"
+               folderId="{FOLDER_GUID}">
+<!-- Result: Literal string "{FOLDER_GUID}" sent to API, lands in root -->
+
+<!-- Pattern 3: Empty folder ID -->
+<bns:Component componentId=""
+               name="Component_Name"
+               type="profile.json"
+               folderId="">
+<!-- Result: Component lands in root folder -->
+```
+
+### Correct Pattern - Actual Folder GUID
+
+```xml
+<bns:Component componentId=""
+               name="Component_Name"
+               type="profile.json"
+               folderId="folder_abc123def">
+<!-- Result: Component correctly placed in designated folder -->
+```
+
+### MANDATORY Verification Step
+
+**ALWAYS verify folder placement immediately after component creation:**
+1. **Check Boomi platform GUI** to confirm components landed in correct project folder
+2. **If components appear in root folder**, STOP and investigate MCP tool folder resolution
+3. **Never proceed with root folder components** - delete and recreate properly
+4. **Verify resolution**: Check that folder ID resolves to actual GUID before API call
+
+### Pre-Creation and Verification
+
+Before creating: Folder created with `boomi-folder-create.sh`, folder ID is actual GUID, XML uses `folderId` attribute. After creating: Immediately verify placement in Boomi GUI - if in root folder, delete and troubleshoot before recreating.
+
+---
+
+## Issue #8: Common XML Schema Mistakes
+
+**Frequency:** High
+**Detection:** Design-time validation errors during push
+
+### The Problem
+
+Common XML attribute and element mistakes that cause validation errors during component push operations. These are easy to fix once identified but can be confusing without examples.
+
+### Message Step Errors
+
+**Wrong:**
+```xml
+<message combineDocuments="false" messageType="static">
+```
+
+**Error:**
+```
+cvc-attribute.3: The value 'combineDocuments' of attribute is not valid
+```
+
+**Correct:**
+```xml
+<message combined="false">
+```
+
+**Why:** Use `combined="false"` for single document output.
+
+### Stop Step Errors
+
+**Wrong:** `<stopaction/>`
+**Correct:** `<stop continue="true"/>`
+**Why:** Element name is `stop`, not `stopaction`.
+
+### JSON Profile Type Errors
+
+**Wrong:** `<bns:Component type="profile" subType="json">`
+**Correct:** `<bns:Component type="profile.json">`
+**Why:** JSON profiles use `type="profile.json"`, not separate subType.
+
+### Set Properties Step Errors
+
+**Wrong:**
+```xml
+<shape shapetype="setproperties">
+  <setproperties>
+    <!-- configuration -->
+  </setproperties>
+</shape>
+```
+
+**Error:**
+```
+cvc-enumeration-valid: Value 'setproperties' is not facet-valid
+```
+
+**Correct:**
+```xml
+<shape shapetype="documentproperties">
+  <documentproperties>
+    <!-- configuration -->
+  </documentproperties>
+</shape>
+```
+
+**Why:** Use `documentproperties` (not `setproperties`) for both shapetype and element.
+
+### Component ID Mismatch Errors
+
+**Wrong:** UPDATE with empty componentId
+**Correct:** CREATE uses `componentId=""`, UPDATE uses actual platform GUID
+**Why:** CREATE requires empty ID, UPDATE requires matching GUID.
+
+---
+
+## Issue #9: Map Function GUI Requirements
+
+**Frequency:** Low
+**Detection:** Map editor loads a blank canvas; browser console shows `Maximum call stack size exceeded`
+
+### The Problem
+
+A `<FunctionStep>` without `x`/`y` canvas coordinates cannot be rendered by the Boomi map editor — the canvas loads blank and the browser throws a stack-overflow error. API push and process execution are unaffected; the failure is GUI-only, and a single coordinate-less function is enough to trigger it.
+
+### Wrong Pattern
+
+```xml
+<Functions optimizeExecutionOrder="true">
+  <FunctionStep category="Scripting" key="1" name="Scripting"
+                position="1" type="Scripting">
+    <!-- Missing x/y coordinates -->
+  </FunctionStep>
+</Functions>
+```
+
+### Correct Pattern
+
+```xml
+<Functions optimizeExecutionOrder="true">
+  <FunctionStep cacheEnabled="true" category="Scripting" key="1" name="Scripting"
+                position="1" sumEnabled="false" type="Scripting" x="10.0" y="10.0">
+    ...
+  </FunctionStep>
+</Functions>
+```
+
+### Attributes
+
+- `x` and `y` — required for GUI rendering. Start the first function at `y="10.0"` and increment ~140px per function.
+- `cacheEnabled`/`sumEnabled` — GUI-authored (`true`/`false`), not required for push, execution, or rendering. Emitting them matches what the GUI writes.
+
+See `references/components/map_component_functions.md` for full detail.
+
+### Additional Consideration
+
+**Map function independence:** Within a map's `<Functions>`, each function widget must be standalone - never wire one function's output to another function's input. For multi-step transformations, prefer a User-Defined Function component (`transform.function`, where step-to-step chaining is legal - see `references/components/user_defined_function_component.md`); use a single scripting function only when the logic genuinely needs code.
+
+---
+
+## Issue #10: Process Layout Spacing
+
+**Frequency:** Low
+**Detection:** GUI label overlap
+
+### The Problem
+
+Steps positioned too close together cause label overlap in Boomi GUI, making process difficult to read.
+
+### Correct Pattern
+
+Use **250-unit spacing** between shapes on same horizontal line to prevent label overlap.
+
+```xml
+<shape x="250" y="100" shapetype="start">
+  <!-- Start step -->
+</shape>
+
+<shape x="500" y="100" shapetype="connector">
+  <!-- Connector step (250 units from start) -->
+</shape>
+
+<shape x="750" y="100" shapetype="stop">
+  <!-- Stop step (250 units from connector) -->
+</shape>
+```
+
+### Spacing Guidelines
+
+- **Horizontal spacing**: 250 units between steps on same line
+- **Vertical spacing**: 100 units for branches/parallel paths
+- **Special offset**: Test data Message shapes ~100px below main path
+
+---
+
+## Issue #11: GUI Display Attributes
+
+**Frequency:** Low
+**Detection:** "null" displays in GUI (steps work correctly at runtime)
+
+### The Problem
+
+Missing display attributes cause "null" to appear in Boomi GUI instead of property names, though steps execute correctly.
+
+### Affected Steps
+
+**Connector Steps:**
+```xml
+<!-- Missing display attributes -->
+<propertyvalue childKey="userId" key="queryParameters" valueType="track">
+  <trackparameter propertyId="dynamicdocument.DDP_USER_ID"/>
+  <!-- GUI shows "null" for property name -->
+</propertyvalue>
+```
+
+**Correct:**
+```xml
+<propertyvalue childKey="userId" key="queryParameters"
+               name="Query Parameters" valueType="track">
+  <trackparameter propertyId="dynamicdocument.DDP_USER_ID"
+                  propertyName="Dynamic Document Property - DDP_USER_ID"
+                  defaultValue=""/>
+</propertyvalue>
+```
+
+**Message/Notify Steps:**
+```xml
+<!-- Missing display attributes -->
+<parametervalue key="1" valueType="track">
+  <trackparameter propertyId="dynamicdocument.DDP_ORDER_ID"/>
+  <!-- GUI shows "null" for property name -->
+</parametervalue>
+```
+
+**Correct:**
+```xml
+<parametervalue key="1" valueType="track">
+  <trackparameter propertyId="dynamicdocument.DDP_ORDER_ID"
+                  propertyName="Dynamic Document Property - DDP_ORDER_ID"
+                  defaultValue=""/>
+</parametervalue>
+```
+
+### Required Attributes
+
+- **Connector steps**: `name="Query Parameters"` on propertyvalue
+- **All trackparameter elements**: `propertyName="..."` and `defaultValue=""`
+- **Pattern**: All programmatically generated steps with `<trackparameter>` elements need GUI display attributes
+
+### Impact
+
+- **Runtime**: Steps execute correctly regardless of display attributes
+- **GUI**: Shows "null" instead of property names, harder for humans to review
+- **Best Practice**: Include display attributes for human-friendly processes
+
+---
+
+## Issue #12: Subprocess Test Payloads in Production
+
+**Frequency:** Medium
+**Detection:** Silent - test data used instead of real data
+
+### The Problem
+
+Temporary test Message shapes added for subprocess isolated testing are forgotten and left active in production deployments, causing processes to use test data instead of real data from parent process.
+
+### Subprocess Testing Context
+
+**Challenge:** When testing subprocess in isolation (via boomi-test-execute.sh or GUI), subprocess expects document from parent wrapper but has no data source.
+
+**Common Solution:** Add temporary Message shape with test JSON payload that mimics expected structure from WSS request.
+
+### Wrong Pattern - Test Code Left Active
+
+```xml
+<!-- Subprocess starts -->
+<shape shapetype="start">
+  <passthroughaction/>
+</shape>
+
+<!-- Test Message shape for isolated testing -->
+<shape x="100" y="200" shapetype="message">
+  <message combined="false">
+    <msgTxt>'{"test": "data", "mode": "development"}'</msgTxt>
+  </message>
+</shape>
+
+<!-- Business logic -->
+<shape x="250" y="100" shapetype="map">
+  <!-- Routes from both start AND test message -->
+</shape>
+<!-- Result: Production deployment uses test data! -->
+```
+
+### Correct Pattern - Test Code Removed
+
+```xml
+<!-- Subprocess starts -->
+<shape shapetype="start">
+  <passthroughaction/>
+</shape>
+
+<!-- Business logic directly after start -->
+<shape x="250" y="100" shapetype="map">
+  <!-- Routes only from start -->
+</shape>
+<!-- Result: Production uses real data from parent process -->
+```
+
+### Alternative: Dynamic Routing for Permanent Testability
+
+If subprocess needs ongoing isolated testing capability:
+
+1. Parent wrapper: Add Set Properties step setting `DPP_FROM_WRAPPER=true`
+2. Subprocess: Start with Decision step checking if `DPP_FROM_WRAPPER` exists
+3. Path when DPP present (called from parent) → proceed to business logic
+4. Path when DPP absent (isolated testing) → Message shape with test payload → business logic
+5. Subprocess remains permanently testable without removing test code
+
+### Pre-Deployment Checklist
+
+Before deploying WSS wrapper + subprocess to production:
+1. [ ] Identify all Message shapes in subprocess
+2. [ ] Verify test Message shapes are removed OR
+3. [ ] Verify dynamic routing properly detects parent vs isolated testing
+4. [ ] Test parent-to-subprocess flow uses real data path
+5. [ ] Document which Message shapes are permanent vs temporary
+
+---
+
+## Issue #13: SSL Certificate Verification in Testing
+
+**Frequency:** Medium
+**Detection:** Runtime connection failures - SSL certificate verification errors
+
+### The Problem
+
+Development and testing environments often use self-signed SSL certificates. Python CLI tools and curl commands fail with SSL certificate verification errors when connecting to these environments, despite credentials being correct.
+
+**Common Scenarios:**
+- Local/custom Boomi instances with self-signed certificates
+- Development runtime servers with non-production certificates
+- Testing against localhost HTTPS endpoints
+
+### Why It Happens
+
+By default, both Python's `requests` library and `curl` refuse to connect to HTTPS endpoints with untrusted or self-signed certificates for security reasons.
+
+### Wrong Pattern - Hard-Coded Insecure Flags
+
+```bash
+# Disabling SSL without configuration visibility
+curl -k -X POST "${SERVER_BASE_URL}/ws/simple/endpoint"
+```
+
+**Problem:** Future developers don't know when `-k` flag is needed or why.
+
+### Correct Pattern - Configurable SSL Verification
+
+**Configuration Variables:**
+```bash
+# .env file
+BOOMI_VERIFY_SSL=false        # Platform API SSL verification
+SERVER_VERIFY_SSL=false       # Runtime server SSL verification
+```
+
+**Python Tools:** All CLI tools automatically respect `BOOMI_VERIFY_SSL` setting:
+```python
+# Handled automatically by tools
+verify_ssl_config = self.config.get('api', {}).get('verify_ssl', 'true')
+self.verify_ssl = str(verify_ssl_config).lower() != 'false'
+response = requests.get(url, verify=self.verify_ssl)
+```
+
+**Curl Commands:** Use conditional SSL flag based on SERVER_VERIFY_SSL:
+```bash
+# SSL verification helper (add -k flag if SERVER_VERIFY_SSL=false)
+SSL_FLAG=$([ "${SERVER_VERIFY_SSL}" = "false" ] && echo "-k" || echo "")
+
+# Inline JSON with SSL support. curl_cfg puts the credentials on stdin and escapes
+# them; -u would leak them to the command line.
+source <skill-path>/scripts/boomi-common.sh
+curl_cfg user "${SERVER_USERNAME}:${SERVER_TOKEN}" \
+  | curl $SSL_FLAG -X POST -K - \
+      -H "Content-Type: application/json" \
+      -d '{"key":"value"}' \
+      "${SERVER_BASE_URL}/ws/simple/endpoint"
+```
+
+### Configuration Separation
+
+Two separate settings control SSL verification in different contexts:
+
+**BOOMI_VERIFY_SSL:**
+- Controls: Platform API calls (component pull/push/create, deployments)
+- Used by: All Python CLI tools in `<skill-path>/scripts/` directory
+- Set to `false` when: Platform API URL uses self-signed certificate
+
+**SERVER_VERIFY_SSL:**
+- Controls: Runtime server HTTP testing (WSS listener curl commands)
+- Used by: Manual curl testing commands
+- Set to `false` when: Shared Web Server uses self-signed certificate
+
+**Important:** Platform API and runtime server may use different certificates. Configure each independently based on your environment.
+
+### Pre-Testing Checklist
+
+Before testing processes:
+1. Identify if environment uses self-signed certificates
+2. Set `BOOMI_VERIFY_SSL=false` if platform API uses self-signed cert
+3. Set `SERVER_VERIFY_SSL=false` if runtime server uses self-signed cert
+4. For production environments, always use `true` (verify certificates)
+5. Document SSL configuration in environment setup notes
+
+### Security Note
+
+Disabling SSL verification should only be used in development/testing environments with self-signed certificates. Production environments should always verify SSL certificates (`BOOMI_VERIFY_SSL=true` and `SERVER_VERIFY_SSL=true`).
+
+---
+
+## Issue #14: Branch Step Missing numBranches Attribute
+
+**Frequency:** Medium
+**Detection:** GUI rendering error - blank canvas with JavaScript console error
+
+### The Problem
+
+Branch steps without the `numBranches` attribute deploy successfully and execute correctly at runtime, but cause the Boomi GUI to render a blank canvas when opening the process. JavaScript errors appear in browser console.
+
+**Symptom:** `Cannot read properties of null (reading 'a')` JavaScript error in AtomSphere GUI when opening process.
+
+### Why It Happens
+
+The Boomi GUI canvas renderer expects the `numBranches` attribute to determine how many outgoing paths exist. Without this attribute, the GUI attempts to read a null value and fails to render the entire process canvas.
+
+**Critical Detail:** Process deploys and executes successfully - only GUI rendering fails.
+
+### Wrong Pattern - Blank Canvas Despite Successful Deployment
+
+```xml
+<!-- Branch step without numBranches -->
+<shape image="branch_icon" name="shape2" shapetype="branch" x="240.0" y="48.0">
+  <configuration>
+    <branch/>
+  </configuration>
+  <dragpoints>
+    <dragpoint identifier="1" name="shape2.dragpoint1" text="1" toShape="shape4" x="416.0" y="56.0"/>
+    <dragpoint identifier="2" name="shape2.dragpoint2" text="2" toShape="shape10" x="416.0" y="376.0"/>
+  </dragpoints>
+</shape>
+<!-- Result: Deploys successfully, executes correctly, but GUI shows blank canvas -->
+```
+
+### Correct Pattern - GUI Renders Properly
+
+```xml
+<!-- Branch step with numBranches matching dragpoint count -->
+<shape image="branch_icon" name="shape2" shapetype="branch" x="240.0" y="48.0">
+  <configuration>
+    <branch numBranches="2"/>
+  </configuration>
+  <dragpoints>
+    <dragpoint identifier="1" name="shape2.dragpoint1" text="1" toShape="shape4" x="416.0" y="56.0"/>
+    <dragpoint identifier="2" name="shape2.dragpoint2" text="2" toShape="shape10" x="416.0" y="376.0"/>
+  </dragpoints>
+</shape>
+<!-- Result: Deploys, executes, AND renders correctly in GUI -->
+```
+
+### Critical Rule
+
+**Always include `numBranches` attribute and match it to dragpoint count:**
+- 2 dragpoints → `numBranches="2"`
+- 3 dragpoints → `numBranches="3"`
+- 4 dragpoints → `numBranches="4"`
+
+### Pre-Push Checklist
+
+Before pushing any process with branch steps:
+1. [ ] Locate all `<branch/>` elements in process XML
+2. [ ] Verify each has `numBranches="N"` attribute
+3. [ ] Count dragpoints and verify number matches `numBranches` value
+4. [ ] Test GUI rendering after deployment to confirm canvas displays
+
+### Related Step Documentation
+
+See references/steps/branch_step.md for complete branch step XML reference and configuration examples.
+
+---
+
+## Issue #15: Stop Step Missing continue Attribute
+
+**Frequency:** Medium
+**Detection:** Runtime failure and GUI rendering error
+
+### The Problem
+
+Stop steps without the `continue` attribute (bare `<stop/>`) are silently accepted by the platform API and deploy without error, but fail at both runtime and in the GUI. Both `continue="true"` and `continue="false"` are valid -- only the missing attribute triggers the failures.
+
+**Symptoms:**
+- **Runtime:** `NullPointerException` at `StopShape.init(StopShape.java:37)` — process never starts
+- **GUI:** `Cannot read properties of null (reading 'a')` and `Maximum call stack size exceeded` JavaScript errors — process cannot be opened on canvas
+
+### Why It Happens
+
+The Boomi platform API performs no validation on the `continue` attribute during push or deploy. Both operations succeed silently. The failure surfaces only when the runtime engine or GUI renderer attempts to initialize the stop shape and encounters a null where the `continue` value is expected.
+
+**Critical Detail:** The API and deployment pipeline give no indication anything is wrong. The failure is deferred to execution time (runtime) or canvas open (GUI).
+
+### Wrong Pattern — Silent Deploy, Runtime + GUI Failure
+
+```xml
+<!-- Stop step without continue attribute -->
+<shape image="stop_icon" name="shape9" shapetype="stop" x="1968.0" y="48.0">
+  <configuration>
+    <stop/>
+  </configuration>
+  <dragpoints/>
+</shape>
+<!-- Result: Push and deploy succeed silently. Runtime: NullPointerException. GUI: stack overflow. -->
+```
+
+### Correct Pattern
+
+```xml
+<!-- Stop step with continue attribute -->
+<shape image="stop_icon" name="shape9" shapetype="stop" x="1968.0" y="48.0">
+  <configuration>
+    <stop continue="true"/>
+  </configuration>
+  <dragpoints/>
+</shape>
+<!-- Result: Deploys, executes, AND opens in GUI without errors -->
+```
+
+### Critical Rule
+
+**Always include the `continue` attribute in all stop step configurations.** Either `continue="true"` or `continue="false"` — choose based on whether other paths should keep processing. The attribute is required for both runtime execution and GUI compatibility.
+
+### Pre-Push Checklist
+
+Before pushing any process with stop steps:
+1. [ ] Locate all `<stop/>` elements in process XML
+2. [ ] Verify each has the `continue` attribute (either `"true"` or `"false"`)
+3. [ ] Test GUI opening after deployment to confirm process is accessible
+
+---
+
+## Issue #16: WSS Start Step Invalid actionType
+
+**Frequency:** Medium
+**Detection:** GUI rendering error - empty action picklist in operation configuration
+
+### The Problem
+
+Web Services Server (WSS) start steps with invalid `actionType` values deploy successfully to the platform but fail to function as listeners. The Boomi GUI shows an empty action picklist when viewing the operation configuration, making it impossible to properly configure the operation through the GUI.
+
+**Real-World Symptoms:**
+- Process deploys without errors
+- HTTP requests to the endpoint time out or return 404
+- GUI shows empty dropdown for action selection in operation configuration
+- No runtime errors - process simply doesn't listen for incoming requests
+
+### Why It Happens
+
+WSS start steps require `actionType="Listen"` - this is the only valid value for listener-based start shapes. Other plausible-sounding values like "EXECUTE", "POST", or "GET" pass platform validation during deployment but cause the operation configuration to fail silently.
+
+**Root Cause:** Platform accepts invalid actionType during component push, but runtime initialization skips the listener setup when actionType doesn't match expected value.
+
+### Wrong Pattern - Silent Listener Failure
+
+```xml
+<!-- WSS Start step with invalid actionType -->
+<shape image="start" name="shape1" shapetype="start" userlabel="" x="96.0" y="94.0">
+  <configuration>
+    <connectoraction actionType="EXECUTE" allowDynamicCredentials="NONE" connectorType="wss" hideSettings="true" operationId="e468be9c-e350-4ed8-8841-e8001793031b">
+      <parameters/>
+      <dynamicProperties/>
+    </connectoraction>
+  </configuration>
+  <dragpoints>
+    <dragpoint name="shape1.dragpoint1" toShape="shape5" x="304.0" y="120.0"/>
+  </dragpoints>
+</shape>
+<!-- Result: Deploys successfully, but doesn't listen for requests! -->
+```
+
+### Correct Pattern - Working Listener
+
+```xml
+<!-- WSS Start step with correct actionType -->
+<shape image="start" name="shape1" shapetype="start" userlabel="" x="96.0" y="94.0">
+  <configuration>
+    <connectoraction actionType="Listen" allowDynamicCredentials="NONE" connectorType="wss" hideSettings="true" operationId="e468be9c-e350-4ed8-8841-e8001793031b">
+      <parameters/>
+      <dynamicProperties/>
+    </connectoraction>
+  </configuration>
+  <dragpoints>
+    <dragpoint name="shape1.dragpoint1" toShape="shape5" x="304.0" y="120.0"/>
+  </dragpoints>
+</shape>
+<!-- Result: Deploys and correctly listens for incoming HTTP requests -->
+```
+
+### Critical Rule
+
+**Always use `actionType="Listen"` for WSS start steps.** This is the only valid value for listener-based connectors.
+
+**Valid actionType values by start step type:**
+- **WSS listeners**: `actionType="Listen"` (ONLY valid value)
+- **Event Streams listeners**: `actionType="Listen"` (subscriber processes)
+- **Passthrough**: `<passthroughaction/>` (no actionType attribute)
+
+### Pre-Push Checklist
+
+Before pushing any process with WSS start steps:
+1. [ ] Locate all WSS start shapes (`connectorType="wss"`)
+2. [ ] Verify each has `actionType="Listen"` (exact spelling, capitalization)
+3. [ ] Confirm operationId references valid WSS operation component
+4. [ ] Test endpoint after deployment to confirm listener is active
+
+### Related Step Documentation
+
+See references/steps/start_step.md for complete start step XML reference and WSS configuration examples.
+
+---
+
+## Issue #17: Data Process Script Engine Attributes
+
+**Frequency:** Medium
+**Detection:** Runtime error - cryptic error message about null script engine
+
+### The Problem
+
+Data Process Custom Scripting steps missing the required `language` attribute deploy successfully to the platform but fail at runtime with cryptic error: "Failed loading script engine null". The XML pushes without validation errors, but execution fails. (The `useCache` attribute is a performance flag, not required for execution — only `language` is load-bearing.)
+
+**Real-World Symptoms:**
+- Process deploys without errors
+- Runtime execution fails with "Error executing data process"
+- Error message shows "Failed loading script engine null"
+- Caused by: java.lang.NullPointerException
+- No design-time warnings or validation errors
+
+### Why It Happens
+
+The platform API accepts `<dataprocessscript>` elements without the `language` attribute during component push. However, at runtime, script engine initialization requires this attribute to determine which scripting engine to load. Without it, the engine lookup returns null, causing immediate NullPointerException.
+
+**Root Cause:** Platform validation doesn't enforce required scripting attributes, but runtime engine requires them.
+
+### Wrong Pattern - Cryptic Runtime Failure
+
+```xml
+<!-- Data Process step without required attributes -->
+<step index="1" key="1" name="Custom Scripting" processtype="12">
+  <dataprocessscript>
+    <script><![CDATA[
+      import java.util.Properties;
+      import java.io.InputStream;
+
+      for( int i = 0; i < dataContext.getDataCount(); i++ ) {
+          InputStream is = dataContext.getStream(i);
+          Properties props = dataContext.getProperties(i);
+
+          props.setProperty("document.dynamic.userdefined.DDP_PROCESSED", "true");
+
+          dataContext.storeStream(is, props);
+      }
+    ]]></script>
+  </dataprocessscript>
+</step>
+<!-- Result: Deploys successfully, but fails at runtime with "Failed loading script engine null" -->
+```
+
+### Correct Pattern - Working Script Execution
+
+```xml
+<!-- Data Process step with required attributes -->
+<step index="1" key="1" name="Custom Scripting" processtype="12">
+  <dataprocessscript language="groovy2" useCache="true">
+    <script><![CDATA[
+      import java.util.Properties;
+      import java.io.InputStream;
+
+      for( int i = 0; i < dataContext.getDataCount(); i++ ) {
+          InputStream is = dataContext.getStream(i);
+          Properties props = dataContext.getProperties(i);
+
+          props.setProperty("document.dynamic.userdefined.DDP_PROCESSED", "true");
+
+          dataContext.storeStream(is, props);
+      }
+    ]]></script>
+  </dataprocessscript>
+</step>
+<!-- Result: Deploys and executes successfully at runtime -->
+```
+
+### Critical Rule
+
+**Always include the `language` attribute on `<dataprocessscript>` elements:**
+- `language` - Specifies which script engine to load (REQUIRED). Valid tokens are `groovy2` (Groovy 2.4, the default), `groovy` (Groovy 1.5), and `javascript` (JavaScript). What matters for this error is that the attribute is *present*; any valid token avoids it.
+- `useCache="true"` - Script compilation caching flag (recommended, not required for execution — a step runs whether it is `"true"`, `"false"`, or omitted).
+
+Without the `language` attribute, the script engine cannot initialize and runtime execution fails immediately.
+
+### Pre-Push Checklist
+
+Before pushing any Data Process Custom Scripting steps:
+1. [ ] Locate all `<dataprocessscript>` elements in component XML
+2. [ ] Verify each has a `language` attribute (`groovy2` default; `groovy`/`javascript` also valid)
+3. [ ] Optionally set `useCache="true"` (performance flag; not required for execution)
+4. [ ] Test execution after deployment to confirm script runs successfully
+
+### Related Step Documentation
+
+See references/steps/data_process_custom_scripting.md for complete Custom Scripting XML reference and examples.
+
+---
+
+## Issue #18: Notify perExecution="true" Loses Document Context
+
+**Frequency:** Medium
+**Detection:** Runtime error - "Attempting dynamic document property extraction with no document"
+
+### The Problem
+
+Notify steps with `perExecution="true"` that reference DDPs, current data / document content, or profile elements fail at runtime. The error message suggests documents are missing, but in reality it is that the step ignores the documents and IMPORTANTLY errors if it attempts to reference document level data. If no document level data is attempted to be referenced, the documents will continue to flow through as expected.
+
+### Why It Happens
+
+`perExecution="true"` changes the Notify step to execute once per process execution instead of once per document. In this mode, there is no "current document" - the step runs outside the document iteration loop.
+
+**Critical clarification:** The notify step with perException=true does NOT destroy DDPs or documents. Subsequent steps can access DDPs normally. But if the error is encountered, further processing down that path will halt, breaking the process.
+
+### Wrong Pattern - Error When Step References DDPs
+
+```xml
+<notify perExecution="true" ...>
+  <notifyMessage>Processing user: {1}</notifyMessage>
+  <notifyParameters>
+    <parametervalue key="1" valueType="track">
+      <trackparameter propertyId="dynamicdocument.DDP_USER_EMAIL"/>
+    </parametervalue>
+  </notifyParameters>
+</notify>
+<!-- Result: "Attempting dynamic document property extraction with no document" -->
+```
+
+### Correct Patterns
+
+**Option A - Remove perExecution (log per document):**
+```xml
+<notify perExecution="false" ...>
+  <notifyMessage>Processing user: {1}</notifyMessage>
+  <!-- DDPs work fine with perExecution="false" -->
+</notify>
+```
+
+**Option B - Use static/DPP values only:**
+```xml
+<notify perExecution="true" ...>
+  <notifyMessage>Process started at {1}</notifyMessage>
+  <notifyParameters>
+    <parametervalue key="1" valueType="date">
+      <dateparameter dateparametertype="current" datetimemask="yyyy-MM-dd HH:mm:ss"/>
+    </parametervalue>
+  </notifyParameters>
+</notify>
+<!-- Works - no document-level references -->
+```
+
+**Option C - Copy DDP to DPP first:**
+```xml
+<!-- Step 1: Set Properties copies DDP to DPP -->
+<!-- Step 2: Notify uses DPP instead -->
+<notify perExecution="true" ...>
+  <notifyMessage>Batch processing for: {1}</notifyMessage>
+  <notifyParameters>
+    <parametervalue key="1" valueType="process">
+      <processparameter processproperty="DPP_BATCH_NAME"/>
+    </parametervalue>
+  </notifyParameters>
+</notify>
+```
+
+### Pre-Push Checklist
+
+Before pushing Notify steps with `perExecution="true"`:
+1. [ ] Verify no DDP references in parameters
+2. [ ] Verify no `valueType="current"` (document content)
+3. [ ] Verify no profile element references
+4. [ ] Only static, date, or DPP references allowed
+
+---
+
+## Issue #19: WSS Listener Path Collision
+
+**Frequency:** Medium
+**Detection:** Silent - requests route to wrong/stale process
+
+### The Problem
+
+Multiple deployed processes on the same WSS path cause unpredictable routing. Requests may hit an older process instead of the newly deployed one.
+
+**Symptoms:** Process deploys successfully but returns old responses. Process Reporting shows executions hitting processes "last updated weeks ago."
+
+### Diagnostic
+
+`ListenerStatus` is the authoritative registry of active listeners on a runtime, but **its entries do not expose the listener's HTTP path**. Each entry contains only:
+
+- `listenerId` — the listener-bearing **process** componentId (not the operation componentId)
+- `status` — `listening` | `paused` | `errored`
+- `connectorType` — e.g. `wss`
+
+So the registry can answer "what listeners are active on this runtime?" but cannot directly answer "are any of them on the same path?" To compare paths, you must enrich each entry by fetching its process and operation components.
+
+**Step 1 — enumerate active listeners via ListenerStatus async query:**
+
+```bash
+# curl_cfg puts the credentials on stdin and escapes them; -u would leak them to
+# the command line.
+source <skill-path>/scripts/boomi-common.sh
+auth() { curl_cfg user "BOOMI_TOKEN.${BOOMI_USERNAME}:${BOOMI_API_TOKEN}"; }
+
+# Start async query
+auth | curl -K - -X POST "${BOOMI_API_URL}/${BOOMI_ACCOUNT_ID}/async/ListenerStatus/query" \
+  -H "Content-Type: application/json" -H "Accept: application/json" \
+  -d '{"QueryFilter":{"expression":{"operator":"EQUALS","property":"containerId","argument":["'${BOOMI_TEST_ATOM_ID}'"]}}}'
+# Returns {"asyncToken":{"token":"ListenerStatus-..."}}
+
+# Poll for results (replace TOKEN)
+auth | curl -K - "${BOOMI_API_URL}/${BOOMI_ACCOUNT_ID}/async/ListenerStatus/response/{TOKEN}" \
+  -H "Accept: application/json"
+```
+
+A successful response has the shape:
+
+```json
+{
+  "@type": "AsyncOperationResult",
+  "result": [
+    { "@type": "ListenerStatus", "listenerId": "<process componentId>", "status": "listening", "connectorType": "wss" }
+  ],
+  "numberOfResults": 1,
+  "responseStatusCode": 200
+}
+```
+
+**Step 2 — resolve each `listenerId` to its registered path** (only needed for collision comparison):
+
+1. `GET Component/{listenerId}` — fetch the process XML
+2. Locate the start step's `connectoraction[@connectorType='wss']` element and read its `operationId`
+3. `GET Component/{operationId}` — fetch the operation XML
+4. Read `WebServicesServerListenAction/@objectName` and `@operationType`
+5. The path is `/ws/simple/{lowercase(operationType)}{SentenceCase(objectName)}`
+
+For a fast path-level collision check **without** the per-listener Component enrichment, hit the suspected path directly with `<skill-path>/scripts/boomi-wss-test.sh --method HEAD` and check the status code — a non-404 with valid perimeter credentials means a listener is registered there. Note that this approach is sensitive to the credentials being correct: see `references/platform_entities/shared_web_server.md` for the cloud-perimeter behavior that conflates "wrong creds" and "listener exists" if not handled carefully.
+
+### Prevention
+
+Use unique, project-specific objectName values in WSS Operations:
+
+```xml
+<!-- Collision-prone -->
+<WssOperation objectName="products" operationType="create"/>
+
+<!-- Unique per project -->
+<WssOperation objectName="productsMyProject" operationType="create"/>
+```
+
+### Resolution
+
+Change objectName to unique path, redeploy, and undeploy stale processes via AtomSphere GUI.
+
+---
+
+## Issue #20: MCP Server Profile/Schema Sync
+
+**Frequency:** High
+**Detection:** Silent - old validation rules active after schema changes
+
+### The Problem
+
+MCP Server `toolSchema` changes don't propagate to the JSON Profile. The tool validates against the old profile until you reimport and redeploy.
+
+### Correct Pattern
+
+After any schema change:
+1. Reimport JSON Profile from new schema
+2. Update operation (`toolSchema`, `cookie/value`, `defaultValue` must all match)
+3. Redeploy ALL processes using this connection
+
+```bash
+bash <skill-path>/scripts/boomi-component-push.sh active-development/profile.json/mcp-profile.xml
+bash <skill-path>/scripts/boomi-component-push.sh active-development/connector-action/mcp-operation.xml
+bash <skill-path>/scripts/boomi-deploy.sh active-development/process/mcp-process.xml
+```
+
+---
+
+## Issue #21: MCP Server 503 After Valid Auth
+
+**Frequency:** Medium
+**Detection:** Runtime - 503 "Server Shutting Down" after successful token validation
+
+### The Problem
+
+MCP Server returns 503 after auth succeeds. Token is valid, but session initialization fails.
+
+### Workaround
+
+Restart the Atom. Redeploying alone does not fix this - the Atom itself needs to be restarted.
+
+---
+
+## Issue #22: EDI TagList elementKey Target
+
+**Frequency:** High (any EDI profile with qualified repeating loops)
+**Detection:** Runtime - map produces more output documents than expected, or address/child segment data silently missing
+
+### The Problem
+
+When configuring tagLists on an EDI profile, `elementKey` must point to the **loop** element, not a segment within the loop. Two failure modes:
+
+**No tagLists**: Mapping from a repeating EDI loop (e.g., N1 loop with N1*ST and N1*BT) produces separate output documents per loop iteration. Header and detail data are duplicated across all split documents.
+
+**Segment-level elementKey**: Pointing `elementKey` at a segment (e.g., the N1 segment) instead of the containing loop causes splitting AND silent data loss -- sibling segments within the loop (N3 address, N4 city/state/zip) are excluded from scope entirely. No error is raised.
+
+### The Fix
+
+Set `elementKey` to the loop's key, not a segment's key. With loop-level `elementKey`, the map consolidates qualified iterations into different target fields of a single output document per transaction set.
+
+```xml
+<!-- CORRECT: elementKey points to the N1 Loop (key=20) -->
+<TagList elementKey="20" listKey="1">
+
+<!-- WRONG: elementKey points to the N1 Segment (key=21) — causes splitting + data loss -->
+<TagList elementKey="21" listKey="1">
+```
+
+---
+
+## Issue #23: Empty processOverrides Hides Extensions Until Redeclared
+
+**Frequency:** High (any pull-modify-push workflow on processes with extensions)
+**Detection:** Silent - extension values disappear from environment after deployment
+
+### The Problem
+
+Pushing a process with empty `<bns:processOverrides/>` or empty `<Overrides xmlns=""/>` removes that process's extension declarations from the environment. Values that had been set via the Environment Extensions API are hidden — they no longer appear in GET responses and are not used at runtime.
+
+The values are **not destroyed**: redeploying the process with its original `<bns:processOverrides>` block restored brings the declarations back, and the previously-set values reappear at their prior state. Recovery does not require a snapshot — only a clean redeploy.
+
+### Why It Happens
+
+The platform stores exactly what is pushed. An empty processOverrides element is not "no change" -- it is "this process has no extensions." When deployed, the environment removes the extension declarations and the values become orphaned (preserved server-side but invisible to API and runtime until a matching declaration returns).
+
+### Wrong Pattern - Extensions Silently Hidden
+
+```xml
+<!-- Pulled process had extensions, but processOverrides was emptied or left as self-closing -->
+<bns:Component ...>
+  <bns:object>...</bns:object>
+  <bns:processOverrides/>
+</bns:Component>
+<!-- Result: After push + deploy, this process's extension values are hidden from API and runtime -->
+```
+
+### Correct Pattern - Preserve Extensions
+
+```xml
+<bns:Component ...>
+  <bns:object>...</bns:object>
+  <bns:processOverrides>
+    <Overrides xmlns="">
+      <Connections>
+        <ConnectionOverride id="c7d489dc-...">
+          <field id="url" label="URL" overrideable="true" xpath="HttpSettings/@url"/>
+        </ConnectionOverride>
+      </Connections>
+      <Properties>
+        <PropertyOverride name="DPP_MY_SETTING"/>
+      </Properties>
+    </Overrides>
+  </bns:processOverrides>
+</bns:Component>
+<!-- Result: Extension declarations preserved after push + deploy -->
+```
+
+### Pre-Push Checklist
+
+Before pushing any process that may have extensions:
+1. Check if pulled XML contained populated `<bns:processOverrides>` content
+2. Never replace populated overrides with self-closing `<bns:processOverrides/>`
+3. When creating new processes, use self-closing form only if the process genuinely has no extensions
+
+### Recovery
+
+If a push has already hidden extensions, restore the original `<bns:processOverrides>` block in the process XML and redeploy — values come back with their prior settings. No API replay is required.
+
+---
+
+## Issue #24: DPP valueType="track" Returns Empty
+
+**Frequency:** High
+**Detection:** Silent - DPP values appear as empty string in output
+
+### The Problem
+
+Reading a Dynamic Process Property (DPP) with `valueType="track"` / `<trackparameter>` always returns empty string, regardless of whether the DPP was set by environment extensions, Set Properties steps, or Groovy scripts. No error is thrown -- the value is simply empty.
+
+Additionally, `valueType="track"` with `perExecution="true"` (no document context) throws: `ProcessException: Attempting tracked document property extraction with no document`.
+
+### Why It Happens
+
+`valueType="track"` with `<trackparameter>` is designed for Dynamic **Document** Properties (DDPs). Despite `propertyId="process.DPP_NAME"` appearing to reference a DPP, the track mechanism does not resolve process-level properties.
+
+### Wrong Pattern - DPP Always Empty
+
+```xml
+<parametervalue key="0" valueType="track">
+  <trackparameter defaultValue="" propertyId="process.DPP_SF_CLIENT_ID"
+                  propertyName="Dynamic Process Property - DPP_SF_CLIENT_ID"/>
+</parametervalue>
+<!-- Result: Always returns empty string, silently -->
+```
+
+### Correct Pattern - DPP Value Retrieved
+
+```xml
+<parametervalue key="0" valueType="process">
+  <processparameter processproperty="DPP_SF_CLIENT_ID" processpropertydefaultvalue=""/>
+</parametervalue>
+<!-- Result: Returns the actual DPP value -->
+```
+
+### The Rule
+
+- **DPPs** -> always use `valueType="process"` with `<processparameter>`
+- **DDPs** -> use `valueType="track"` with `<trackparameter>`
+
+This applies everywhere a `<parametervalue>` element is used: Message steps, Notify steps, Set Properties source values, and connector dynamic properties.
+
+---
+
+## Issue #25: Identity Field mandatory="true" on Map Output
+
+**Frequency:** High (any multi-record flat file profile used as map output)
+**Detection:** Runtime error - `MANDATORY_ELEMENT_MISSING`
+
+### The Problem
+
+Multi-record flat file profiles with `mandatory="true"` on identity fields (Code/Qual fields with `useToIdentifyFormat="true"`) cause runtime errors when the profile is used as a **map output**. Unmapped record types have empty identity fields, which triggers mandatory validation failure.
+
+**Error message:**
+```
+[Output ProfileLocation: RecordName/Elements/Code; DocumentLocation: Record (1,0), FileRow 1]: Invalid Data Element: MANDATORY_ELEMENT_MISSING
+```
+
+### Why It Happens
+
+When a flat file profile is used as map output, Boomi validates all `mandatory="true"` fields on every record type in the output document. If only some record types are mapped, unmapped record types produce empty identity fields. Those empty fields fail mandatory validation.
+
+### Wrong Pattern - Runtime Error on Unmapped Records
+
+```xml
+<FlatFileElement name="RecordType" startColumn="0" length="3"
+                useToIdentifyFormat="true" identityValue="139"
+                mandatory="true" .../>
+<!-- Result: MANDATORY_ELEMENT_MISSING when this profile is map output and not all records are mapped -->
+```
+
+### Correct Pattern - Identity Detection Works Without Mandatory
+
+```xml
+<FlatFileElement name="RecordType" startColumn="0" length="3"
+                useToIdentifyFormat="true" identityValue="139"
+                mandatory="false" .../>
+<!-- Result: Identity detection works correctly; no validation error on unmapped records -->
+```
+
+### The Rule
+
+**Default to `mandatory="false"` on identity fields** (`useToIdentifyFormat="true"`). Identity detection uses `identityValue` comparison alone — it does not depend on the mandatory flag. Since profiles are often reused across input and output contexts, `mandatory="false"` on identity fields avoids this error without sacrificing detection behavior.
+
+`mandatory="true"` on identity fields is only safe when the profile will never be used as map output, or when every record type will always be mapped.
+
+---
+
+## Issue #26: Identity Value Trimming in Data Positioned Profiles
+
+**Frequency:** High (any data positioned profile with `detectFormat="uniquevalues"`)
+**Detection:** Silent in multi-record scenarios (record missing from output, no error). Explicit ERROR if the unmatched record is the only record in the data.
+
+### The Problem
+
+Boomi trims extracted field values before comparing them against `identityValue` in `uniquevalues` detection. But it does NOT trim the `identityValue` attribute itself. If `identityValue` contains trailing whitespace, the comparison fails silently.
+
+**Multi-record scenario:** Other records match normally. The mismatched record silently vanishes — no error, no warning, the section is simply absent from output.
+
+**Single-record scenario:** No records match. Error: `"No data produced from map, please check source profile and make sure it matches source data."`
+
+### Why It Happens
+
+In a data positioned profile, fields have fixed widths. If an identity value is shorter than the field width (e.g., "BF" in a 3-char field), the extracted value is "BF " (padded with trailing space). Boomi trims this to "BF" before comparison. But `identityValue="BF "` is compared as-is — "BF" ≠ "BF ".
+
+### Wrong Pattern - Silent Record Loss
+
+```xml
+<!-- Field is 3 chars wide, but "BF" is only 2 chars -->
+<FlatFileElement name="Qualifier" startColumn="2" length="3"
+                useToIdentifyFormat="true" identityValue="BF "
+                mandatory="false" .../>
+<!-- Result: Extracted "BF " trimmed to "BF", compared against "BF " → no match → record vanishes -->
+```
+
+### Correct Pattern - Trimmed Identity Value
+
+```xml
+<FlatFileElement name="Qualifier" startColumn="2" length="3"
+                useToIdentifyFormat="true" identityValue="BF"
+                mandatory="false" .../>
+<!-- Result: Extracted "BF " trimmed to "BF", compared against "BF" → match -->
+```
+
+### The Rule
+
+**Always set `identityValue` to the trimmed identifier text, never padded to field width.** This applies regardless of the field's `length` attribute. Values that already fill the full field width (e.g., "CTL" in a 3-char field) are unaffected since trimming doesn't change them.
+
+### Debugging Tip
+
+If a specific record type is missing from output but others parse correctly, check whether its identity value is shorter than the field width. This is the most common cause.
+
+---
+
+## Issue #27: Listener Process with Default Process Options
+
+**Frequency:** High (any listener process created without adjusting process options)
+**Detection:** Silent - concurrent requests queued or rejected instead of processed in parallel
+
+### The Problem
+
+Listener processes (WSS, FSS, MCP Server, Event Streams) created with default process options have `allowSimultaneous="false"`, which causes concurrent requests to queue or fail. WSS processes return HTTP 503 to concurrent callers. Other listener types queue or reject subsequent triggers while one execution is in progress.
+
+### Why It Happens
+
+New processes default to `allowSimultaneous="false"` and `updateRunDates="true"` — appropriate for scheduled/batch processes but wrong for listeners. The Boomi GUI shows a yellow banner recommending changes when configuring a listener start step, but programmatic creation skips this prompt.
+
+### Wrong Pattern - Listener with Default Options
+
+```xml
+<process allowSimultaneous="false" enableUserLog="false" processLogOnErrorOnly="false" purgeDataImmediately="false" updateRunDates="true" workload="general">
+  <shapes>
+    <shape image="start" name="shape1" shapetype="start" userlabel="" x="96.0" y="94.0">
+      <configuration>
+        <connectoraction actionType="Listen" connectorType="wss" .../>
+      </configuration>
+    </shape>
+  </shapes>
+</process>
+<!-- Result: Second concurrent HTTP request gets HTTP 503; updateRunDates adds per-execution overhead -->
+```
+
+### Correct Pattern - Listener with Recommended Options
+
+```xml
+<process allowSimultaneous="true" enableUserLog="false" processLogOnErrorOnly="false" purgeDataImmediately="false" updateRunDates="false" workload="general">
+  <shapes>
+    <shape image="start" name="shape1" shapetype="start" userlabel="" x="96.0" y="94.0">
+      <configuration>
+        <connectoraction actionType="Listen" connectorType="wss" .../>
+      </configuration>
+    </shape>
+  </shapes>
+</process>
+<!-- Result: Concurrent requests processed in parallel; no run date overhead -->
+```
+
+### Pre-Push Checklist
+
+Before pushing any process with a listener start step:
+1. [ ] Verify `allowSimultaneous="true"` on the `<process>` element
+2. [ ] Verify `updateRunDates="false"` on the `<process>` element
+3. [ ] Applies to all listener types: WSS, FSS, MCP Server, Event Streams Listen
+
+See `components/process_component.md` for the full decision table of recommended values by start step type.
+
+---
+
+## Issue #28: SF Operation Missing Sorts Element
+
+**Frequency:** High (any programmatically-created Salesforce query operation)
+**Detection:** GUI white screen — `TypeError: Cannot read properties of null (reading 'a')` when opening the operation editor
+
+### The Problem
+
+A Salesforce query operation missing the `<Sorts/>` element inside `<SalesforceObject>` causes the Boomi GUI operation editor to white-screen crash. The runtime is unaffected — queries execute fine without it.
+
+### Why It Happens
+
+The GWT-based operation editor assumes `<Sorts>` exists as a child of `<SalesforceObject>` and NPEs when it's null. GUI-imported operations always include this element (even when empty). Programmatically-created operations may omit it.
+
+### Wrong Pattern — GUI Crash
+
+```xml
+<SalesforceObject name="Account" objectAction="query">
+  <FieldList>...</FieldList>
+  <Filter>...</Filter>
+  <!-- No <Sorts/> element — GUI white-screens -->
+  <SalesforceObject name="Child Objects" objectType="childObjects"/>
+  <SalesforceObject name="Parent Objects" objectType="parentObjects"/>
+</SalesforceObject>
+```
+
+### Correct Pattern
+
+```xml
+<SalesforceObject name="Account" objectAction="query">
+  <FieldList>...</FieldList>
+  <Filter>...</Filter>
+  <Sorts/>
+  <SalesforceObject name="Child Objects" objectType="childObjects"/>
+  <SalesforceObject name="Parent Objects" objectType="parentObjects"/>
+</SalesforceObject>
+```
+
+### The Rule
+
+Always include `<Sorts/>` inside `<SalesforceObject>` on query operations, after `</Filter>` and before child `<SalesforceObject>` elements. Even when empty, its presence is required for GUI rendering.
+
+---
+
+## Issue #29: Component Locking Blocks All API Updates
+
+**Frequency:** Medium (accounts with Component Locking enabled)
+**Detection:** Push fails with HTTP 400 — `"Component {id} is currently locked by another user. To complete this action, the component must be unlocked."`
+
+### The Problem
+
+When Component Locking is enabled in a Boomi account and a user holds a lock on a component (via the GUI), all API updates to that component are rejected with HTTP 400 — including API calls authenticated as the lock holder.
+
+### Key Facts
+
+- **Reads are unaffected** — GET/pull succeeds regardless of lock state.
+- **Writes are blocked for all API users** — locks are GUI-session-scoped, not user-scoped. The API is always treated as a separate session.
+- **No lock query API** — there is no endpoint to check lock status. The only way to discover a lock is to attempt a push and observe the 400.
+- **No API lock/unlock** — locks can only be acquired and released in the GUI.
+- **Error message is identical** regardless of whether the API credentials match the lock holder — it always says "locked by another user."
+
+### The Rule
+
+When a push fails with this error, inform the user that the component is locked and must be unlocked in the Boomi GUI. Do not retry — the lock state cannot be changed via API.
+
+---
+
+## Issue #30: Groovy Syntax Errors Deploy Successfully
+
+**Frequency:** Medium
+**Detection:** Runtime error surfaced only in ProcessLog — push and deploy complete cleanly
+
+### The Problem
+
+Groovy scripts inside `<dataprocessscript>` components are compiled by the Atom runtime at first execution, not at push or deploy time. A syntactically invalid script pushes and deploys without errors, then fails at runtime with `CompilationFailedException` (or similar) visible only in the execution log.
+
+**Real-World Symptoms:**
+- Component push returns HTTP 200
+- `boomi-deploy.sh` prints `SUCCESS: Deployed`
+- Process execution fails with a Groovy compile error (unexpected token, unclosed brace, unresolved type, etc.)
+- The error is visible only by inspecting the ProcessLog for the failed execution
+
+### Why It Happens
+
+The platform API validates XML schema at push and deployment metadata at deploy, but the `<script>` body is stored as opaque text. Compilation happens inside the runtime the first time a script executes, via the script engine selected by the `language` attribute on `<dataprocessscript>`. Push-time and deploy-time checks never exercise the script parser, so syntactic issues cannot surface until execution. (The same deploy-clean / execution-fail pattern applies to JavaScript scripts, which the Nashorn engine likewise compiles on first execution.)
+
+### Wrong Pattern — Treating Deploy Success as Verification
+
+```
+bash <skill-path>/scripts/boomi-component-push.sh process/your_process.xml   # 200 OK
+bash <skill-path>/scripts/boomi-deploy.sh process/your_process.xml            # SUCCESS: Deployed
+# — change considered verified, process never executed —
+```
+
+### Correct Pattern — Execute and Inspect the ProcessLog
+
+```
+bash <skill-path>/scripts/boomi-component-push.sh process/your_process.xml
+bash <skill-path>/scripts/boomi-deploy.sh process/your_process.xml
+bash <skill-path>/scripts/boomi-test-execute.sh --process-id <guid>
+# inspect ProcessLog for Groovy compile/runtime errors before considering the change verified
+```
+
+### The Rule
+
+After any change to a `<dataprocessscript>` body, execute the process, then verify **both** that the ProcessLog is free of errors **and** that observable outputs (DDPs, routing, document content) match intent. Deploy-clean and error-free execution are not, by themselves, correctness signals for script body changes.
+
+### Related
+
+- `references/steps/data_process_custom_scripting.md` — Data Process Custom Scripting step reference
+- Issue #17 documents a sibling "deploy-clean, runtime-fails" pattern for the same step type (missing `language`/`useCache`)
+
+---
+
+## Issue #31: Connection-Override Field Missing `xpath` Is Silently Inert
+
+**Frequency:** High (any hand-authored or round-tripped `<bns:processOverrides>` connection override)
+**Detection:** Silent — no deploy error, no execution error; the connector simply uses the wrong value
+
+### The Problem
+
+A connection-override `<field>` declared `overrideable="true"` but missing its connector-specific `xpath` attribute is *declared but inert*. The `xpath` is the binding that injects the environment-extension value onto the target attribute in the connection XML; without it the value is never applied.
+
+The defect is dangerous because everything *looks* configured:
+- The field shows as overrideable in the Boomi GUI extensions tab.
+- The extensions GET (`boomi-extensions.sh get`) reports the field with `useDefault=false` and the set value.
+- There is no deploy warning and no execution error.
+
+At request time, the connector silently falls back to the connection component's baked-in default. It is **environment-masked** — it works on any environment where the connection's default already equals the desired value, and only fails where they differ (the classic "works in test, fails in prod"). It is also **redeploy-proof**: the broken declaration lives in the component, so redeploying reships it. Other override sections (e.g. `DefinedProcessPropertyOverrides`) bind independently and are unaffected, so credentials can resolve from extensions while a connection field does not — sending real credentials to the wrong host.
+
+### Wrong Pattern — Declared but Inert
+
+```xml
+<ConnectionOverride id="241f2935-...">
+  <field id="url" label="URL" overrideable="true"/>
+</ConnectionOverride>
+<!-- Override appears active in GUI and API, but the URL extension is ignored at runtime -->
+```
+
+### Correct Pattern — `xpath` Binds the Override
+
+```xml
+<ConnectionOverride id="241f2935-...">
+  <field id="url" label="URL" overrideable="true" xpath="HttpSettings/@url"/>
+</ConnectionOverride>
+<!-- The URL extension value is injected into HttpSettings/@url at runtime -->
+```
+
+Emit the complete canonical `<ConnectionOverride>` block the platform generates for the connector type — every field enumerated, each with its own `xpath` — rather than a hand-picked subset. See references/components/process_extensions.md § Connection Overrides for how to obtain it.
+
+### Detection
+
+Flag any self-closing overrideable `<field>` that has no `xpath`:
+
+```
+grep -oE '<field id="[^"]*" label="[^"]*" overrideable="true"/>' process.xml
+```
+
+Any match is a declared-but-inert override (a correctly bound field ends with `xpath="..."/>`, not `overrideable="true"/>`).
+
+### Related
+
+- `references/components/process_extensions.md` — Connection and Operation Overrides
+- Issue #23 documents the adjacent failure where an emptied `<bns:processOverrides>` hides extension declarations entirely
+
+---
+
+## Issue #32: Agent Step Errors Return In-Band, Not as Faults
+
+**Frequency:** High (any process using an Agent step)
+**Detection:** Silent — the shape reports success and the execution reports `COMPLETE`
+
+### The Problem
+
+Agent Garden answers an agent-side rejection with **HTTP 200** and a `{"success":false,"error":"..."}` body. The connector sees a successful call and emits that body as the output document. Nothing raises, so the shape reports success, the execution reports `COMPLETE`, and **a Try/Catch around the Agent step never fires** — there is no fault to catch.
+
+A process relying on Try/Catch for agent failures therefore has no error handling at all and reports success on total failure. The operation's `returnApplicationErrors` attribute does not change this; `true` and `false` behave identically.
+
+Agent-side rejections include: file uploads not enabled, file type or format rejected, too many or oversized files, and input not matching a structured agent's schema.
+
+### Wrong Pattern — Try/Catch as the Only Handler
+
+```
+Try/Catch
+  └── Agent Step → downstream
+      catch path: never taken — failures flow downstream as ordinary documents
+```
+
+### Correct Pattern — Decision on `success`, Try/Catch for Transport
+
+```
+Try/Catch
+  └── Agent Step → Decision (success == true?)
+                     ├── true  → downstream
+                     └── false → Exception step
+      catch path: transport faults only (read/connect timeout, unreachable host)
+```
+
+The Decision reads `success` from the returned envelope. Keep the Try/Catch — transport faults *do* fail the shape (`Shape executed with errors`, message in `meta.base.catcherrorsmessage`).
+
+### Related Traps
+
+- **Execution status is not a health signal.** Both failure classes finish `COMPLETE` — the rejection because nothing raised, a *caught* transport fault because the catch absorbed it.
+- **Guardrail blocks return `success: true`** with the refusal as the payload, so a `success` check passes them. Only content inspection catches those.
+- **A conversational agent's error output is JSON, not SSE**, so the `event: message` extractor returns `""` and discards the error. Branch on `success` before extracting.
+
+### Detection
+
+Rejections are refused before inference, so they return in a fraction of a real run's time. An Agent step that returns far faster than usual has usually been rejected.
+
+### Related
+
+- `references/steps/agent_step.md` § Error Handling — the two-class contract and timeout behavior
+- `references/steps/agent_step.md` § Output Format — the structured envelope the Decision reads `success` from
+
+---
+
+## Issue #33: Disk V2 Directory Outside `work/` Denied on Cloud Runtimes
+
+**Frequency:** High (any Disk V2 connection built without a stated runtime target)
+**Detection:** Runtime error — `java.io.FilePermission` denial on execution; push and deploy succeed
+
+### The Problem
+
+On cloud runtimes, Disk V2 writes are permitted under `work` and its subdirectories — any depth, auto-created with `createDir=true` — and denied outside it. `/tmp` is the common case.
+
+For an ordinary path, the constraint is **location, not path form**: a relative path outside `work` is denied exactly as an absolute one is. A `..` traversal segment is a separate rule — see § Traversal Is Blocked as a Form below.
+
+Every denied path still pushes and deploys cleanly — nothing surfaces at design time.
+
+The restriction covers the `connector.disk-sdk.directory` document property as well as the connection field, so a compliant connection does not guarantee a compliant write target.
+
+### Two Error Shapes
+
+Which message appears depends on whether the target directory already exists. Both contain `access denied ("java.io.FilePermission"`.
+
+**Target must be created** — directory creation denied, mode `write`, no exception class in the message:
+
+```
+[-1] access denied ("java.io.FilePermission" "{configured-directory}" "write")
+```
+
+**Target already exists** — existence check denied, mode `read`, wrapped in a connector message:
+
+```
+[-1] Cannot check for the existence of the file because it cannot be read or written to: java.security.AccessControlException: access denied ("java.io.FilePermission" "/tmp" "read")
+```
+
+The quoted path is echoed exactly as configured — not normalized, not resolved to an absolute path, no filename appended.
+
+### Traversal Is Blocked as a Form
+
+A `..` segment is denied even when it resolves back inside `work` — the permission check matches the literal, un-normalized path string. For the denial shapes, see `references/components/diskv2_connector_operation_component.md` § fileName with Subdirectory Paths.
+
+### Wrong Pattern — A Location Outside `work`
+
+```xml
+<field id="directory" type="string" value="/tmp"/>
+```
+
+### Correct Pattern
+
+```xml
+<field id="directory" type="string" value="work/output"/>
+```
+
+### The Rule
+
+Default every Disk V2 directory value to `work/{purpose}`.
+
+### Detection
+
+Config side — flag any directory value not under `work`, and inspect every override:
+
+```
+grep -n 'id="directory"' connection.xml | grep -v 'value="work[/"]'
+grep -n 'connector.disk-sdk.directory' process.xml
+```
+
+Anchor the `work` match on `/` or the closing quote — a bare `value="work` prefix also accepts non-compliant siblings such as `workflow/out`.
+
+Log side — key on the substring common to every shape. Do not pin the mode word (both `read` and `write` occur) and do not require the exception class (absent from the creation-denied shape):
+
+```
+grep -F 'access denied ("java.io.FilePermission"' process.log
+```
+
+### Related
+
+- `references/components/diskv2_connection_component.md` § Directory Configuration
+- `references/components/diskv2_connector_operation_component.md` § fileName with Subdirectory Paths — traversal denial, directory-override concatenation
+
+---
+
+## Issue #34: Split Documents Preserves the Parent Wrapper
+
+**Frequency:** High (any split followed by profile-keyed field access)
+**Detection:** Silent in Set Properties and Route (execution `COMPLETE`). Explicit ERROR in a Map.
+
+### The Problem
+
+A Split Documents step reduces the array or repeating element to one occurrence but keeps the parent wrapper: `{"orders":[A,B,C]}` yields `{"orders":[A]}`, `{"orders":[B]}`, `{"orders":[C]}`. XML behaves the same. Keyed against a flattened single-element profile:
+
+- **Set Properties** returns an empty string
+- **Route** matches nothing, so every document falls to the Default path
+- **Map** fails with `No data produced from map '<name>', please check source profile and make sure it matches source data`, emitting zero documents, so downstream steps are skipped
+
+### The Rule
+
+Downstream of a split, reuse the same profile and nested element keys as upstream of it. See `references/steps/data_process_step.md` § Output Document Shape.
+
+---
+
+## Issue #35: Account Default Branch Redirects Unqualified Operations
+
+**Frequency:** Low overall, but affects every operation in an account where it is set
+**Detection:** Silent by default — a write intended for main lands elsewhere and reports success
+
+### The Problem
+
+A request that names no branch resolves to the account's default branch. The setting is account-wide, so it reaches developers who never work on branches themselves, and it persists until someone changes it back in the UI. Requires branch & merge enabled; where those endpoints are denied every operation is on main (see `branch_merge_api_behavior.md` § Non-Branch-Enabled Account Behavior).
+
+### Detection
+
+- A push reports a new version, but main's version did not change.
+- A component readable on main reports `ComponentId is invalid` on push.
+- `bash <skill-path>/scripts/boomi-branch.sh default` reports the current setting (read-only).
+
+Create and push print the branch the platform used — `Create landed on branch:`, `Push landed on branch:` — and warn when it differs from the branch requested. A pull prints `Pull read from branch:` only when it named no branch; a `--branch` pull suppresses it, because an inherited component returns the parent's `branchId` and the report would be misleading. Compare what is printed against the branch you intended.
+
+### Resolution
+
+Pass `--branch main` for operations that must target main. The default is set in the UI only (Branch Management) — ask the user to change it there when the reported branch disagrees with intent.
+
+`ComponentId is invalid` does not distinguish "invisible to the addressed branch" from "no such ID". Pull and push diagnose it automatically and print a `DIAGNOSIS:` line; for any other component, `boomi-version-history.sh --component-id <id>` spans every branch, so the BRANCH column names the branches that can see it and zero rows mean the ID is wrong.
+
+### Related
+
+- `references/guides/branch_merge_api_behavior.md` § Account Default Branch — per-endpoint behavior and the `currentVersion` surface split
+
+---

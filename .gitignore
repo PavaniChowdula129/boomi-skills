@@ -1,0 +1,28 @@
+# Environments and secrets
+.env
+.env.*
+!.env.example
+
+# Python virtual environments & bytecode
+.venv/
+venv/
+*/.venv/
+*/venv/
+__pycache__/
+*/__pycache__/
+*.pyc
+*.pyo
+
+# Test and run outputs
+output/
+*/output/
+scratch/
+*/scratch/
+
+# Archives & Large files
+*.zip
+*.tar.gz
+
+# System files
+.DS_Store
+Thumbs.db
