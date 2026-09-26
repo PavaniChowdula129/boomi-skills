@@ -37,11 +37,40 @@ def call_boomi_api(endpoint: str, payload: dict, account_id: str, base_url: str,
         sys.stderr.write(f"Connection error calling {endpoint}: {str(e)}\n")
         return {}
 
+def call_boomi_query_more(endpoint: str, query_token: str, account_id: str, base_url: str, username: str, token: str) -> dict:
+    url = f"{base_url.rstrip('/')}/api/rest/v1/{account_id}/{endpoint}/queryMore"
+    req = urllib.request.Request(
+        url,
+        data=query_token.encode("utf-8"),
+        headers={
+            "Authorization": get_auth_header(username, token),
+            "Content-Type": "text/plain",
+            "Accept": "application/json"
+        },
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        sys.stderr.write(f"API queryMore failed for {endpoint}: {str(e)}\n")
+        return {}
+
 def get_all_environments(account_id: str, base_url: str, username: str, token: str) -> list:
     query = {"QueryFilter": {}}
     res = call_boomi_api("Environment/query", query, account_id, base_url, username, token)
+    all_results = list(res.get("result", []))
+    q_token = res.get("queryToken")
+    while q_token:
+        more_res = call_boomi_query_more("Environment", q_token, account_id, base_url, username, token)
+        items = more_res.get("result", [])
+        if not items:
+            break
+        all_results.extend(items)
+        q_token = more_res.get("queryToken")
+
     envs = []
-    for env in res.get("result", []):
+    for env in all_results:
         envs.append({
             "id": env.get("id"),
             "name": env.get("name", "Unknown Environment")
@@ -179,8 +208,18 @@ def get_deployed_packages(env_id: str, account_id: str, base_url: str, username:
         }
     }
     res = call_boomi_api("DeployedPackage/query", query, account_id, base_url, username, token)
+    all_results = list(res.get("result", []))
+    q_token = res.get("queryToken")
+    while q_token:
+        more_res = call_boomi_query_more("DeployedPackage", q_token, account_id, base_url, username, token)
+        items = more_res.get("result", [])
+        if not items:
+            break
+        all_results.extend(items)
+        q_token = more_res.get("queryToken")
+
     deployed = {}
-    for pkg in res.get("result", []):
+    for pkg in all_results:
         cid = pkg.get("componentId")
         deployed[cid] = {
             "version": pkg.get("componentVersion"),
@@ -426,16 +465,12 @@ def format_summary_sheet(ws_sum, target_node, target_env_name, is_build, deduped
     ws_sum.column_dimensions['B'].width = 50
 
 def generate_build_excel(target_node, all_paths, output_file):
-    wb = Workbook()
-    ws_sum = wb.active
-    ws_sum.title = "Audit Summary"
-    
-    ws_det = wb.create_sheet(title="Hierarchy Details")
-    
     seen_paths = set()
     deduped_rows = []
     
     for path in all_paths:
+        if len(path) <= 1:
+            continue
         classified = classify_path(path)
         main_proc = classified["main_process"]
         mp_name = main_proc.name if main_proc else "None / Orphaned"
@@ -450,17 +485,30 @@ def generate_build_excel(target_node, all_paths, output_file):
             seen_paths.add(row_tuple)
             deduped_rows.append(row_tuple)
             
+    if not deduped_rows:
+        print(f"No Build audit data found for component {target_node.comp_id}. Skipping Build report generation.")
+        return False
+
+    wb = Workbook()
+    ws_sum = wb.active
+    ws_sum.title = "Audit Summary"
+    
+    ws_det = wb.create_sheet(title="Hierarchy Details")
+    
     format_hierarchy_sheet(ws_det, deduped_rows)
     format_summary_sheet(ws_sum, target_node, "N/A", True, deduped_rows, False)
     
     wb.save(output_file)
     print(f"Build Audit report generated: {output_file}")
+    return True
 
 def generate_env_excel(target_node, all_paths, environments, account_id, api_url, username, token, output_file):
     wb = Workbook()
     
     # Remove default sheet
     wb.remove(wb.active)
+    
+    sheets_created = 0
     
     for env in environments:
         env_id = env["id"]
@@ -471,13 +519,12 @@ def generate_env_excel(target_node, all_paths, environments, account_id, api_url
         
         deployed_pkgs = get_deployed_packages(env_id, account_id, api_url, username, token)
         
-        ws_sum = wb.create_sheet(title=f"{safe_env_name}_Summary")
-        ws_det = wb.create_sheet(title=f"{safe_env_name}_Details")
-        
         seen_paths = set()
         deduped_rows = []
         
         for path in all_paths:
+            if len(path) <= 1:
+                continue
             classified = classify_path(path)
             main_proc = classified["main_process"]
             mp_name = main_proc.name if main_proc else "None / Orphaned"
@@ -502,19 +549,45 @@ def generate_env_excel(target_node, all_paths, environments, account_id, api_url
                 seen_paths.add(row_tuple)
                 deduped_rows.append(row_tuple)
                 
+        # Create worksheets only if actual audit data exists for this environment
+        if not deduped_rows:
+            continue
+            
+        base_name = "".join([c if c.isalnum() else "_" for c in env_name])[:20]
+        safe_env_name = base_name
+        counter = 1
+        while f"{safe_env_name}_Summary" in wb.sheetnames or f"{safe_env_name}_Details" in wb.sheetnames:
+            suffix = f"_{counter}"
+            safe_env_name = f"{base_name[:20 - len(suffix)]}{suffix}"
+            counter += 1
+
+        ws_sum = wb.create_sheet(title=f"{safe_env_name}_Summary")
+        ws_det = wb.create_sheet(title=f"{safe_env_name}_Details")
+        
         is_deployed = target_node.comp_id in deployed_pkgs
                 
         format_hierarchy_sheet(ws_det, deduped_rows)
         format_summary_sheet(ws_sum, target_node, env_name, False, deduped_rows, is_deployed)
+        sheets_created += 2
         
+    if sheets_created == 0:
+        if len(environments) == 1:
+            print(f"No audit data found for component {target_node.comp_id} in environment '{environments[0]['name']}' ({environments[0]['id']}). Skipping Environment report generation.")
+        else:
+            print(f"No audit data found for component {target_node.comp_id} across any environment. Skipping Environment report generation.")
+        return False
+
     try:
         wb.save(output_file)
         if os.path.exists(output_file):
             print(f"Environment Audit report generated and verified on disk: {output_file}")
+            return True
         else:
             print(f"ERROR: wb.save completed but file not found on disk: {output_file}")
+            return False
     except Exception as e:
         print(f"CRITICAL ERROR saving Environment Workbook: {e}")
+        return False
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate Boomi Component Excel Audit Report")
@@ -546,9 +619,12 @@ if __name__ == "__main__":
     extract_paths(target_node, [{"node": target_node}], all_paths)
     print(f"Total hierarchy paths extracted: {len(all_paths)}")
     
+    build_success = False
+    env_success = False
+
     if args.mode in ["BUILD", "BUILD_AND_ENVIRONMENT", "BUILD_AND_ALL_ENVIRONMENTS"]:
         build_out_file = os.path.join(out_dir, f"Build_Audit_Report_{args.component_id}_{timestamp}.xlsx")
-        generate_build_excel(target_node, all_paths, build_out_file)
+        build_success = generate_build_excel(target_node, all_paths, build_out_file)
     
     if args.mode in ["ENVIRONMENT", "ALL_ENVIRONMENTS", "BUILD_AND_ENVIRONMENT", "BUILD_AND_ALL_ENVIRONMENTS"]:
         if args.mode in ["ENVIRONMENT", "BUILD_AND_ENVIRONMENT"] and args.environment_id:
@@ -562,10 +638,25 @@ if __name__ == "__main__":
                 if e["id"] == args.environment_id:
                     envs = [e]
                     break
-            generate_env_excel(target_node, all_paths, envs, args.account_id, args.api_url, args.username, args.token, env_out_file)
+            env_success = generate_env_excel(target_node, all_paths, envs, args.account_id, args.api_url, args.username, args.token, env_out_file)
         else:
             print("Fetching all available environments...")
             env_out_file = os.path.join(out_dir, f"Environment_Audit_All_Environments_{args.component_id}_{timestamp}.xlsx")
             all_e = get_all_environments(args.account_id, args.api_url, args.username, args.token)
             print(f"Found {len(all_e)} environments.")
-            generate_env_excel(target_node, all_paths, all_e, args.account_id, args.api_url, args.username, args.token, env_out_file)
+            env_success = generate_env_excel(target_node, all_paths, all_e, args.account_id, args.api_url, args.username, args.token, env_out_file)
+
+    # Overall empty audit handling
+    if args.mode == "BUILD":
+        if not build_success:
+            print(f"No audit data was found for the requested component: {args.component_id}")
+    elif args.mode in ["ENVIRONMENT", "ALL_ENVIRONMENTS"]:
+        if not env_success:
+            print(f"No audit data was found for the requested component: {args.component_id}")
+    elif args.mode in ["BUILD_AND_ENVIRONMENT", "BUILD_AND_ALL_ENVIRONMENTS"]:
+        if not build_success and not env_success:
+            print(f"No audit data was found for the requested component: {args.component_id}")
+        elif build_success and not env_success:
+            print(f"Notice: Build report generated, but no audit data was found for component {args.component_id} in the requested environment scope.")
+        elif not build_success and env_success:
+            print(f"Notice: Environment report generated, but no audit data was found for component {args.component_id} in Build scope.")

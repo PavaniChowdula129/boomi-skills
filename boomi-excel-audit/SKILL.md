@@ -19,6 +19,11 @@ It traverses references recursively upward to all roots, accurately capturing in
   - `ENVIRONMENT`: Generates a single Environment-Oriented Excel report for a specific `--environment-id`.
   - `ALL_ENVIRONMENTS`: Discovers all environments and generates one Environment-Oriented Excel report with a worksheet per environment.
   - `BUILD_AND_ENVIRONMENT`: Generates both the Build and the specified Environment reports.
+- **Empty Report Handling**:
+  - Validates whether actual audit records exist before creating each worksheet.
+  - Worksheets are created only when there are actual audit records to display; no blank sheets or sheets with dummy/placeholder values are created.
+  - For `ALL_ENVIRONMENTS`, worksheets are generated only for environments where audit records exist.
+  - If no audit data exists at all for the requested scope or component, no blank workbook is generated, and a clear message is returned.
 
 ## Required Environment Variables
 Ensure the following variables are defined in your `.env` or agent environment:
@@ -41,4 +46,4 @@ python scripts/generate_audit_report.py \
   --mode "<BUILD | ENVIRONMENT | ALL_ENVIRONMENTS | BUILD_AND_ENVIRONMENT>" \
   --environment-id "<TARGET_ENVIRONMENT_ID>" # (Optional, depending on mode)
 ```
-The script produces the explicitly requested report(s) (`Build_Audit_Report...`, `Environment_Audit_Report...`, or `Environment_Audit_All_Environments...`) inside the `output/` directory.
+The script produces the explicitly requested report(s) (`Build_Audit_Report...`, `Environment_Audit_Report...`, or `Environment_Audit_All_Environments...`) inside the `output/` directory if audit data exists.
