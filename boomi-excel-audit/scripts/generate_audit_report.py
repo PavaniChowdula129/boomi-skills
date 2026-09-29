@@ -524,16 +524,23 @@ def generate_build_excel(target_node, all_paths, output_file):
     
     for path in all_paths:
         if len(path) <= 1:
-            continue
-        classified = classify_path(path)
-        main_proc = classified["main_process"]
-        mp_name = main_proc.name if main_proc else "None / Orphaned"
-        mp_id = main_proc.comp_id if main_proc else ""
+            if target_node.type == "process":
+                main_proc = target_node
+                mp_name = target_node.name
+                mp_id = target_node.comp_id
+                intermediate_chain = "(Direct Process / Entrypoint)"
+                hierarchy = f"[{target_node.type}] {target_node.name}"
+            else:
+                continue
+        else:
+            classified = classify_path(path)
+            main_proc = classified["main_process"]
+            mp_name = main_proc.name if main_proc else "None / Orphaned"
+            mp_id = main_proc.comp_id if main_proc else ""
+            intermediate_chain = classified["intermediate_chain"]
+            hierarchy = classified["hierarchy_str"]
+
         mp_dep = "N/A (Build Scope)"
-        
-        intermediate_chain = classified["intermediate_chain"]
-        hierarchy = classified["hierarchy_str"]
-        
         row_tuple = (mp_name, mp_id, mp_dep, intermediate_chain, hierarchy)
         if row_tuple not in seen_paths:
             seen_paths.add(row_tuple)
@@ -575,11 +582,21 @@ def generate_env_excel(target_node, all_paths, environments, account_id, api_url
         
         for path in all_paths:
             if len(path) <= 1:
-                continue
-            classified = classify_path(path)
-            main_proc = classified["main_process"]
-            mp_name = main_proc.name if main_proc else "None / Orphaned"
-            mp_id = main_proc.comp_id if main_proc else ""
+                if target_node.type == "process":
+                    main_proc = target_node
+                    mp_name = target_node.name
+                    mp_id = target_node.comp_id
+                    intermediate_chain = "(Direct Process / Entrypoint)"
+                    hierarchy = f"[{target_node.type}] {target_node.name}"
+                else:
+                    continue
+            else:
+                classified = classify_path(path)
+                main_proc = classified["main_process"]
+                mp_name = main_proc.name if main_proc else "None / Orphaned"
+                mp_id = main_proc.comp_id if main_proc else ""
+                intermediate_chain = classified["intermediate_chain"]
+                hierarchy = classified["hierarchy_str"]
             
             mp_dep = "N/A"
             if main_proc and main_proc.comp_id in deployed_pkgs:
@@ -592,9 +609,6 @@ def generate_env_excel(target_node, all_paths, environments, account_id, api_url
             if mp_dep == "NOT DEPLOYED" and mp_name != "None / Orphaned":
                 continue
     
-            intermediate_chain = classified["intermediate_chain"]
-            hierarchy = classified["hierarchy_str"]
-            
             row_tuple = (mp_name, mp_id, mp_dep, intermediate_chain, hierarchy)
             if row_tuple not in seen_paths:
                 seen_paths.add(row_tuple)
@@ -1215,16 +1229,14 @@ if __name__ == "__main__":
     
     if selected_mode in ["ENVIRONMENT", "ALL_ENVIRONMENTS", "BUILD_AND_ENVIRONMENT", "BUILD_AND_ALL_ENVIRONMENTS"]:
         if selected_mode in ["ENVIRONMENT", "BUILD_AND_ENVIRONMENT"] and args.environment_id:
-            print(f"Generating isolated environment report for Env ID: {args.environment_id}")
+            env_ids = [e.strip() for e in args.environment_id.split(",") if e.strip()]
+            print(f"Generating isolated environment report for Env ID(s): {', '.join(env_ids)}")
             env_out_file = os.path.join(out_dir, f"Environment_Audit_Report_{args.component_id}_{timestamp}.xlsx")
-            env_meta = {"id": args.environment_id, "name": f"Env {args.environment_id}"} # Fallback name
-            envs = [env_meta]
-            # Attempt to get real name
             all_e = get_all_environments(args.account_id, args.api_url, args.username, args.token)
-            for e in all_e:
-                if e["id"] == args.environment_id:
-                    envs = [e]
-                    break
+            env_map = {e["id"]: e for e in all_e}
+            envs = [env_map[eid] for eid in env_ids if eid in env_map]
+            if not envs:
+                envs = [{"id": eid, "name": f"Env {eid}"} for eid in env_ids]
             env_success = generate_env_excel(target_node, all_paths, envs, args.account_id, args.api_url, args.username, args.token, env_out_file)
         else:
             print("Fetching all available environments...")
