@@ -6,9 +6,10 @@ import base64
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timezone
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 def get_auth_header(username: str, token: str) -> str:
     raw = f"BOOMI_TOKEN.{username}:{token}"
@@ -283,6 +284,33 @@ def get_prior_package(primary_comp_id: str, current_pkg_id: str, account_id: str
                 return pkgs_sorted[i - 1]
             return None
     return None
+
+def get_latest_package_for_component(comp_id: str, account_id: str, base_url: str, username: str, token: str) -> dict:
+    if not comp_id:
+        return None
+    query = {
+        "QueryFilter": {
+            "expression": {
+                "operator": "EQUALS",
+                "property": "componentId",
+                "argument": [comp_id]
+            }
+        }
+    }
+    res = call_boomi_api("PackagedComponent/query", query, account_id, base_url, username, token)
+    all_results = list(res.get("result", []))
+    q_token = res.get("queryToken")
+    while q_token:
+        more_res = call_boomi_query_more("PackagedComponent", q_token, account_id, base_url, username, token)
+        items = more_res.get("result", [])
+        if not items:
+            break
+        all_results.extend(items)
+        q_token = more_res.get("queryToken")
+    if not all_results:
+        return None
+    pkgs_sorted = sorted(all_results, key=lambda x: x.get("createdDate", ""))
+    return pkgs_sorted[-1]
 
 class Node:
     def __init__(self, comp_id, name, type_, folder):
@@ -654,475 +682,694 @@ def generate_env_excel(target_node, all_paths, environments, account_id, api_url
         print(f"CRITICAL ERROR saving Environment Workbook: {e}")
         return False
 
-def generate_package_excel(package_id, environment_id, account_id, api_url, username, token, output_file):
-    print(f"Fetching package metadata for Package ID: {package_id}...")
-    pkg = get_package_metadata(package_id, account_id, api_url, username, token)
-    if not pkg or not pkg.get("packageId"):
-        print(f"ERROR: Package {package_id} not found or could not be retrieved.")
+def inspect_package_and_environments(package_id, account_id, api_url, username, token):
+    pkg_new = get_package_metadata(package_id, account_id, api_url, username, token)
+    if not pkg_new or not pkg_new.get("packageId"):
+        print(f"ERROR: Package {package_id} not found.")
         return False
 
-    primary_id = pkg.get("componentId")
+    primary_id = pkg_new.get("componentId")
     primary_meta = resolve_component_metadata(primary_id, account_id, api_url, username, token)
-    manifest = get_package_manifest(package_id, account_id, api_url, username, token)
-    if not manifest:
-        print(f"No components found in manifest for package {package_id}. Skipping package audit report generation.")
-        return False
+    pkg_prev = get_prior_package(primary_id, package_id, account_id, api_url, username, token)
 
-    prior_pkg = get_prior_package(primary_id, package_id, account_id, api_url, username, token)
-    prior_manifest_map = {}
-    if prior_pkg:
-        p_items = get_package_manifest(prior_pkg.get("packageId"), account_id, api_url, username, token)
-        prior_manifest_map = {item["id"]: item["version"] for item in p_items}
-
-    # Environment deployment context if requested
-    deployed_pkgs = {}
-    env_name = "Build Scope"
-    if environment_id:
-        all_e = get_all_environments(account_id, api_url, username, token)
-        for e in all_e:
-            if e["id"] == environment_id:
-                env_name = e["name"]
-                break
-        deployed_pkgs = get_deployed_packages(environment_id, account_id, api_url, username, token)
-
-    components_info = []
-    modified_components = []
-
-    for item in manifest:
-        cid = item["id"]
-        cver = item["version"]
-        cmeta = resolve_component_metadata(cid, account_id, api_url, username, token)
-        pver = prior_manifest_map.get(cid)
-
-        if prior_pkg is None:
-            status = "INCLUDED (Initial Package)"
-            is_mod = True
-        elif cid not in prior_manifest_map:
-            status = "ADDED"
-            is_mod = True
-        elif pver != cver:
-            status = "MODIFIED"
-            is_mod = True
-        else:
-            status = "UNCHANGED"
-            is_mod = False
-
-        c_entry = {
-            "comp_id": cid,
-            "name": cmeta.get("name", cid),
-            "type": cmeta.get("type", "Unknown"),
-            "folder": cmeta.get("folderName", "Unknown"),
-            "version": cver,
-            "prior_version": pver if pver is not None else "N/A",
-            "status": status,
-            "is_modified": is_mod,
-            "dependent_mps": set()
+    all_envs = get_all_environments(account_id, api_url, username, token)
+    
+    # Active deployments for this primary component
+    q = {
+        "QueryFilter": {
+            "expression": {
+                "operator": "and",
+                "nestedExpression": [
+                    {"operator": "EQUALS", "property": "componentId", "argument": [primary_id]},
+                    {"operator": "EQUALS", "property": "active", "argument": ["true"]}
+                ]
+            }
         }
-        components_info.append(c_entry)
-        if is_mod:
-            modified_components.append(c_entry)
+    }
+    res_dep = call_boomi_api("DeployedPackage/query", q, account_id, api_url, username, token)
+    dep_map = {}
+    for d in res_dep.get("result", []):
+        dep_map[d.get("environmentId")] = d.get("packageVersion")
 
-    # If no components were strictly flagged as modified/added vs prior package, audit all components as INCLUDED
-    if not modified_components:
-        for c in components_info:
-            c["is_modified"] = True
-            c["status"] = "INCLUDED"
-            modified_components.append(c)
+    print("\n========================================================")
+    print(f"PACKAGE VERSION COMPARISON: v{pkg_new.get('packageVersion')} vs v{pkg_prev.get('packageVersion') if pkg_prev else 'N/A'}")
+    print("========================================================")
+    print(f"Latest Package ID   : {package_id} (v{pkg_new.get('packageVersion')})")
+    print(f"Previous Package ID : {pkg_prev.get('packageId') if pkg_prev else 'None (Initial)'} (v{pkg_prev.get('packageVersion') if pkg_prev else 'N/A'})")
+    print(f"Primary Component   : {primary_meta.get('name')} ({primary_id})")
+    print(f"Total Environments  : {len(all_envs)}")
+    print("\nAvailable Environments in Account:")
+    for idx, e in enumerate(all_envs, 1):
+        dep_ver = dep_map.get(e["id"])
+        dep_str = f" [Active Deployed Pkg: v{dep_ver}]" if dep_ver else ""
+        print(f"  {idx}. {e['name']} (ID: {e['id']}){dep_str}")
+    print("========================================================\n")
+    return True
 
-    print(f"Auditing {len(modified_components)} modified/included component(s) across dependencies...")
-    hierarchy_rows = []
-    seen_rows = set()
-    total_impacted_mps = set()
+def generate_change_impact_excel(primary_comp_id, new_package_id, prev_package_id, environment_ids, source_env_id, target_env_id, account_id, api_url, username, token, output_file):
+    print("Initiating Boomi Package Change Impact Analysis...")
 
-    for m in modified_components:
-        tnode, ncache = build_graph(m['comp_id'], account_id, api_url, username, token)
-        paths = []
-        extract_paths(tnode, [{"node": tnode}], paths)
-        for p in paths:
-            classified = classify_path(p)
-            mp = classified["main_process"]
-            mp_name = mp.name if mp else m['name']
-            mp_id = mp.comp_id if mp else m['comp_id']
-            m['dependent_mps'].add(mp_id)
-            total_impacted_mps.add(mp_id)
+    all_envs = get_all_environments(account_id, api_url, username, token)
+    env_map = {e["id"]: e for e in all_envs}
 
-            mp_dep = "N/A (Build Scope)"
-            if environment_id:
-                if mp_id in deployed_pkgs:
-                    d = deployed_pkgs[mp_id]
-                    mp_dep = f"v{d['version']} (Pkg: {d['packageId']})"
-                else:
-                    mp_dep = "NOT DEPLOYED"
+    # Case 1: Environment Comparison (DEV vs QA)
+    if source_env_id and target_env_id:
+        src_name = env_map.get(source_env_id, {}).get("name", f"Env {source_env_id}")
+        tgt_name = env_map.get(target_env_id, {}).get("name", f"Env {target_env_id}")
 
-            chain = classified["intermediate_chain"] if len(p) > 1 else ("(Direct Process / Entrypoint)" if m['type'] == "process" else "(No Parent References)")
-            h_str = classified["hierarchy_str"]
+        if not primary_comp_id and new_package_id:
+            p_meta = get_package_metadata(new_package_id, account_id, api_url, username, token)
+            primary_comp_id = p_meta.get("componentId")
 
-            row_tup = (m['name'], m['comp_id'], m['type'], m['status'], mp_name, mp_id, mp_dep, chain, h_str)
-            if row_tup not in seen_rows:
-                seen_rows.add(row_tup)
-                hierarchy_rows.append(row_tup)
-
-    if not hierarchy_rows:
-        print(f"No dependency hierarchy found for package {package_id}. Skipping package audit report generation.")
-        return False
-
-    wb = Workbook()
-    ws_sum = wb.active
-    ws_sum.title = "Package_Summary"
-    ws_comps = wb.create_sheet(title="Packaged_Components")
-    ws_hier = wb.create_sheet(title="Package_Dependency_Hierarchy")
-
-    header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True)
-
-    # 1. Package_Summary Sheet
-    summary_data = [
-        ("Audited Package ID", package_id),
-        ("Package Version", pkg.get("packageVersion", "Unknown")),
-        ("Primary Component Name", primary_meta.get("name", primary_id)),
-        ("Primary Component ID", primary_id),
-        ("Primary Component Type", primary_meta.get("type", "Unknown")),
-        ("Package Created Date", pkg.get("createdDate", "Unknown")),
-        ("Created By", pkg.get("createdBy", "Unknown")),
-        ("Predecessor Package Version", prior_pkg.get("packageVersion") if prior_pkg else "None (Initial Package)"),
-        ("Predecessor Package ID", prior_pkg.get("packageId") if prior_pkg else "N/A"),
-        ("Total Packaged Components in Manifest", len(components_info)),
-        ("Total Modified / Included Components Audited", len(modified_components)),
-        ("Total Impacted Main Processes", len(total_impacted_mps)),
-        ("Total Hierarchy Paths Discovered", len(hierarchy_rows)),
-        ("Report Scope", f"Environment: {env_name}" if environment_id else "Build Scope (All Paths)"),
-        ("Direct Deployment Status", ("DEPLOYED (Active)" if primary_id in deployed_pkgs else f"NOT DEPLOYED in {env_name}") if environment_id else "N/A (Build Scope)"),
-        ("Audit Timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    ]
-    for r_idx, (k, v) in enumerate(summary_data, 1):
-        c_k = ws_sum.cell(row=r_idx, column=1, value=k)
-        c_k.fill = header_fill
-        c_k.font = header_font
-        ws_sum.cell(row=r_idx, column=2, value=str(v))
-    ws_sum.column_dimensions['A'].width = 42
-    ws_sum.column_dimensions['B'].width = 60
-
-    # 2. Packaged_Components Sheet
-    comp_headers = [
-        "Component Name", "Component ID", "Component Type", "Folder",
-        "Package Version", "Predecessor Version", "Modification Status",
-        "Dependent Main Processes Count"
-    ]
-    for c_idx, h in enumerate(comp_headers, 1):
-        cell = ws_comps.cell(row=1, column=c_idx, value=h)
-        cell.fill = header_fill
-        cell.font = header_font
-        ws_comps.column_dimensions[cell.column_letter].width = 30
-    ws_comps.column_dimensions['A'].width = 40
-    ws_comps.column_dimensions['B'].width = 40
-
-    components_info.sort(key=lambda x: (0 if x["is_modified"] else 1, x["name"]))
-    for r_idx, c in enumerate(components_info, 2):
-        ws_comps.cell(row=r_idx, column=1, value=c["name"])
-        ws_comps.cell(row=r_idx, column=2, value=c["comp_id"])
-        ws_comps.cell(row=r_idx, column=3, value=c["type"])
-        ws_comps.cell(row=r_idx, column=4, value=c["folder"])
-        ws_comps.cell(row=r_idx, column=5, value=c["version"])
-        ws_comps.cell(row=r_idx, column=6, value=c["prior_version"])
-        ws_comps.cell(row=r_idx, column=7, value=c["status"])
-        ws_comps.cell(row=r_idx, column=8, value=len(c["dependent_mps"]))
-    ws_comps.auto_filter.ref = ws_comps.dimensions
-
-    # 3. Package_Dependency_Hierarchy Sheet
-    hier_headers = [
-        "Modified Component", "Component ID", "Component Type", "Modification Status",
-        "Main Process", "Main Process ID", "Main Process Deployment",
-        "Intermediate Reference Chain", "Full Hierarchy Path"
-    ]
-    for c_idx, h in enumerate(hier_headers, 1):
-        cell = ws_hier.cell(row=1, column=c_idx, value=h)
-        cell.fill = header_fill
-        cell.font = header_font
-        ws_hier.column_dimensions[cell.column_letter].width = 30
-    ws_hier.column_dimensions['A'].width = 35
-    ws_hier.column_dimensions['B'].width = 38
-    ws_hier.column_dimensions['E'].width = 35
-    ws_hier.column_dimensions['F'].width = 38
-    ws_hier.column_dimensions['H'].width = 45
-    ws_hier.column_dimensions['I'].width = 110
-
-    hierarchy_rows.sort(key=lambda x: (x[0], x[4], x[7], x[8]))
-    for r_idx, row in enumerate(hierarchy_rows, 2):
-        for c_idx, val in enumerate(row, 1):
-            ws_hier.cell(row=r_idx, column=c_idx, value=val)
-
-    if len(hierarchy_rows) > 1:
-        # Merge Cols A-D (Modified Component)
-        curr_comp = None
-        start_r = 2
-        for i in range(2, len(hierarchy_rows) + 3):
-            val = ws_hier.cell(row=i, column=2).value if i <= len(hierarchy_rows) + 1 else None
-            if val != curr_comp:
-                if curr_comp is not None and (i - 1) > start_r:
-                    for col in range(1, 5):
-                        ws_hier.merge_cells(start_row=start_r, start_column=col, end_row=i-1, end_column=col)
-                        ws_hier.cell(row=start_r, column=col).alignment = Alignment(vertical='top')
-                curr_comp = val
-                start_r = i
-
-        # Merge Cols E-G (Main Process) within same component
-        curr_mp = None
-        start_mp_r = 2
-        for i in range(2, len(hierarchy_rows) + 3):
-            comp_val = ws_hier.cell(row=i, column=2).value if i <= len(hierarchy_rows) + 1 else None
-            mp_val = ws_hier.cell(row=i, column=6).value if i <= len(hierarchy_rows) + 1 else None
-            key = (comp_val, mp_val)
-            if key != curr_mp:
-                if curr_mp is not None and curr_mp[1] is not None and (i - 1) > start_mp_r:
-                    for col in range(5, 8):
-                        ws_hier.merge_cells(start_row=start_mp_r, start_column=col, end_row=i-1, end_column=col)
-                        ws_hier.cell(row=start_mp_r, column=col).alignment = Alignment(vertical='top')
-                curr_mp = key
-                start_mp_r = i
-
-    ws_hier.auto_filter.ref = ws_hier.dimensions
-
-    try:
-        wb.save(output_file)
-        if os.path.exists(output_file):
-            print(f"Package Audit report generated and verified on disk: {output_file}")
-            return True
-        else:
-            print(f"ERROR: wb.save completed but file not found on disk: {output_file}")
+        if not primary_comp_id:
+            print("ERROR: Could not resolve target component for environment comparison.")
             return False
-    except Exception as e:
-        print(f"CRITICAL ERROR saving Package Audit Workbook: {e}")
-        return False
 
-def generate_comparison_excel(primary_comp_id, package_id, source_env_id, target_env_id, account_id, api_url, username, token, output_file):
-    print(f"Resolving environment information for comparison...")
-    envs = get_all_environments(account_id, api_url, username, token)
-    env_map = {e["id"]: e["name"] for e in envs}
-    src_name = env_map.get(source_env_id, f"Env {source_env_id}")
-    tgt_name = env_map.get(target_env_id, f"Env {target_env_id}")
+        primary_meta = resolve_component_metadata(primary_comp_id, account_id, api_url, username, token)
+        print(f"Comparing environments {src_name} vs {tgt_name} for component: {primary_meta.get('name')} ({primary_comp_id})")
 
-    # Determine primary component ID if only package_id is given
-    if not primary_comp_id and package_id:
-        pkg = get_package_metadata(package_id, account_id, api_url, username, token)
-        primary_comp_id = pkg.get("componentId")
+        dep_src = get_deployed_package_for_component(primary_comp_id, source_env_id, account_id, api_url, username, token)
+        dep_tgt = get_deployed_package_for_component(primary_comp_id, target_env_id, account_id, api_url, username, token)
 
-    if not primary_comp_id:
-        print("ERROR: Could not resolve target component for comparison.")
-        return False
+        if not dep_src and not dep_tgt:
+            print(f"No active deployment records found for {primary_meta.get('name')} in {src_name} or {tgt_name}.")
+            return False
 
-    primary_meta = resolve_component_metadata(primary_comp_id, account_id, api_url, username, token)
-    print(f"Comparing {src_name} vs {tgt_name} for component: {primary_meta.get('name')} ({primary_comp_id})")
+        src_pkg_id = dep_src.get("packageId") if dep_src else None
+        tgt_pkg_id = dep_tgt.get("packageId") if dep_tgt else None
 
-    dep_src = get_deployed_package_for_component(primary_comp_id, source_env_id, account_id, api_url, username, token)
-    dep_tgt = get_deployed_package_for_component(primary_comp_id, target_env_id, account_id, api_url, username, token)
+        manifest_new = get_package_manifest(src_pkg_id, account_id, api_url, username, token) if src_pkg_id else []
+        manifest_prev = get_package_manifest(tgt_pkg_id, account_id, api_url, username, token) if tgt_pkg_id else []
 
-    src_pkg_id = dep_src.get("packageId") if dep_src else package_id
-    tgt_pkg_id = dep_tgt.get("packageId") if dep_tgt else None
+        new_label = f"{src_name} (Pkg v{dep_src.get('packageVersion', 'N/A') if dep_src else 'Not Deployed'})"
+        prev_label = f"{tgt_name} (Pkg v{dep_tgt.get('packageVersion', 'N/A') if dep_tgt else 'Not Deployed'})"
+        comparison_source_str = f"Environment Deployment: {src_name} vs {tgt_name}"
+        pkg_new_meta = dep_src or {}
+        pkg_prev_meta = dep_tgt or {}
+        selected_envs = [env_map.get(source_env_id, {"id": source_env_id, "name": src_name}),
+                         env_map.get(target_env_id, {"id": target_env_id, "name": tgt_name})]
 
-    m_src_items = get_package_manifest(src_pkg_id, account_id, api_url, username, token) if src_pkg_id else []
-    m_tgt_items = get_package_manifest(tgt_pkg_id, account_id, api_url, username, token) if tgt_pkg_id else []
+    # Case 2: Package Version Comparison (Latest vs Previous in Selected Environment(s))
+    else:
+        if new_package_id:
+            pkg_new_meta = get_package_metadata(new_package_id, account_id, api_url, username, token)
+        elif primary_comp_id:
+            pkg_new_meta = get_latest_package_for_component(primary_comp_id, account_id, api_url, username, token)
+            if not pkg_new_meta:
+                print(f"ERROR: No packaged components found for component ID: {primary_comp_id}")
+                return False
+            new_package_id = pkg_new_meta.get("packageId")
+        else:
+            print("ERROR: Either package ID or component ID must be provided.")
+            return False
 
-    m_src = {item["id"]: item["version"] for item in m_src_items}
-    m_tgt = {item["id"]: item["version"] for item in m_tgt_items}
+        if not pkg_new_meta or not pkg_new_meta.get("packageId"):
+            print(f"ERROR: Package {new_package_id} could not be retrieved from Boomi API.")
+            return False
 
-    all_cids = sorted(list(set(m_src.keys()) | set(m_tgt.keys())))
+        primary_comp_id = pkg_new_meta.get("componentId")
+        primary_meta = resolve_component_metadata(primary_comp_id, account_id, api_url, username, token)
+
+        if prev_package_id:
+            pkg_prev_meta = get_package_metadata(prev_package_id, account_id, api_url, username, token)
+        else:
+            pkg_prev_meta = get_prior_package(primary_comp_id, new_package_id, account_id, api_url, username, token)
+
+        new_ver_num = pkg_new_meta.get("packageVersion", "Unknown")
+        prev_ver_num = pkg_prev_meta.get("packageVersion", "N/A") if pkg_prev_meta else "N/A (Initial)"
+
+        new_label = f"Package v{new_ver_num} ({new_package_id})"
+        prev_label = f"Package v{prev_ver_num} ({pkg_prev_meta.get('packageId')})" if pkg_prev_meta else "No Previous Package (Initial)"
+        comparison_source_str = f"Packaged Version Comparison: v{new_ver_num} vs v{prev_ver_num}"
+
+        manifest_new = get_package_manifest(new_package_id, account_id, api_url, username, token)
+        manifest_prev = get_package_manifest(pkg_prev_meta.get("packageId"), account_id, api_url, username, token) if pkg_prev_meta else []
+
+        # Determine target environments
+        if environment_ids:
+            if environment_ids.strip().upper() == "ALL":
+                selected_envs = all_envs if all_envs else [{"id": None, "name": "Build Scope"}]
+            else:
+                req_ids = [eid.strip() for eid in environment_ids.split(",") if eid.strip()]
+                selected_envs = [env_map.get(eid, {"id": eid, "name": f"Env {eid}"}) for eid in req_ids]
+        else:
+            # Default to all environments if available, else Build Scope
+            selected_envs = all_envs if all_envs else [{"id": None, "name": "Build Scope"}]
+
+    m_new = {item["id"]: item["version"] for item in manifest_new}
+    m_prev = {item["id"]: item["version"] for item in manifest_prev}
+    all_cids = sorted(list(set(m_new.keys()) | set(m_prev.keys())))
+
     if not all_cids:
-        print(f"No components found in deployed packages for {primary_comp_id} across {src_name} and {tgt_name}.")
+        print("No component manifest data found for comparison.")
         return False
 
-    diff_rows = []
-    differing_components = []
+    print(f"Comparing manifests between {new_label} and {prev_label} ({len(all_cids)} components examined)...")
+
+    changed_components = []
 
     for cid in all_cids:
-        v_src = m_src.get(cid)
-        v_tgt = m_tgt.get(cid)
+        v_new = m_new.get(cid)
+        v_prev = m_prev.get(cid)
         meta = resolve_component_metadata(cid, account_id, api_url, username, token)
         cname = meta.get("name", cid)
         ctype = meta.get("type", "Unknown")
         cfolder = meta.get("folderName", "Unknown")
 
-        if v_src is not None and v_tgt is not None:
-            if v_src == v_tgt:
-                status = "IDENTICAL"
-                impacted = "NO"
+        if not m_prev and not pkg_prev_meta:
+            status = "ADDED (Initial Package)"
+            is_changed = True
+        elif v_new is not None and v_prev is not None:
+            if v_new == v_prev:
+                status = "UNCHANGED"
+                is_changed = False
             else:
                 status = "MODIFIED"
-                impacted = "YES"
-        elif v_src is not None:
-            status = f"ADDED (In {src_name})"
-            impacted = "YES"
+                is_changed = True
+        elif v_new is not None:
+            status = "ADDED"
+            is_changed = True
         else:
-            status = f"REMOVED (In {src_name})"
-            impacted = "YES"
+            status = "REMOVED"
+            is_changed = True
 
-        entry = {
-            "comp_id": cid,
-            "name": cname,
-            "type": ctype,
-            "folder": cfolder,
-            "src_version": v_src if v_src is not None else "N/A",
-            "tgt_version": v_tgt if v_tgt is not None else "N/A",
-            "status": status,
-            "impacted": impacted
-        }
-        diff_rows.append(entry)
-        if impacted == "YES":
-            differing_components.append(entry)
+        if is_changed:
+            changed_components.append({
+                "comp_id": cid,
+                "name": cname,
+                "type": ctype,
+                "folder": cfolder,
+                "version": v_new if v_new is not None else "N/A",
+                "prev_version": v_prev if v_prev is not None else "N/A",
+                "status": status,
+                "impacted_mps": set()
+            })
 
-    print(f"Comparison completed: {len(diff_rows)} components evaluated, {len(differing_components)} differences detected.")
+    # Requirement 4 & 14: ONLY changed components are audited. If none, report and exit.
+    if not changed_components:
+        print(f"\nNo component changes were identified between the latest package version and the previous package version for the selected environment.")
+        return True
 
-    header_fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True)
+    print(f"Found {len(changed_components)} changed component(s). Tracing account-wide usages for ONLY changed components...")
 
-    wb = Workbook()
-    ws_sum = wb.active
-    ws_sum.title = "Comparison_Summary"
-    ws_diff = wb.create_sheet(title="Component_Differences")
-    ws_hier = wb.create_sheet(title="Impacted_Dependencies")
+    # Run dependency tracing for each changed component across the account
+    comp_paths_map = {}
+    total_unique_impact_mps = set()
+    all_unique_mps = set()
 
-    # 1. Comparison_Summary
-    summary_data = [
-        ("Source Environment", f"{src_name} ({source_env_id})"),
-        ("Comparison Environment", f"{tgt_name} ({target_env_id})"),
-        ("Primary Component Name", primary_meta.get("name", primary_comp_id)),
-        ("Primary Component ID", primary_comp_id),
-        ("Primary Component Type", primary_meta.get("type", "Unknown")),
-        ("Source Deployed Package", f"v{dep_src.get('packageVersion')} ({dep_src.get('packageId')})" if dep_src else (f"Specified Pkg: {package_id}" if package_id else "NOT DEPLOYED")),
-        ("Comparison Deployed Package", f"v{dep_tgt.get('packageVersion')} ({dep_tgt.get('packageId')})" if dep_tgt else "NOT DEPLOYED"),
-        ("Total Components in Source Package", len(m_src)),
-        ("Total Components in Comparison Package", len(m_tgt)),
-        ("Total Component Differences", len(differing_components)),
-        ("Modified Components Count", sum(1 for d in diff_rows if d["status"] == "MODIFIED")),
-        ("Added Components in Source", sum(1 for d in diff_rows if "ADDED" in d["status"])),
-        ("Removed Components in Source", sum(1 for d in diff_rows if "REMOVED" in d["status"])),
-        ("Identical Components Count", sum(1 for d in diff_rows if d["status"] == "IDENTICAL")),
-        ("Comparison Timestamp", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    ]
-    for r_idx, (k, v) in enumerate(summary_data, 1):
-        c_k = ws_sum.cell(row=r_idx, column=1, value=k)
-        c_k.fill = header_fill
-        c_k.font = header_font
-        ws_sum.cell(row=r_idx, column=2, value=str(v))
-    ws_sum.column_dimensions['A'].width = 42
-    ws_sum.column_dimensions['B'].width = 60
-
-    # 2. Component_Differences
-    diff_headers = [
-        "Component Name", "Component ID", "Component Type", "Folder",
-        f"{src_name} Version", f"{tgt_name} Version", "Comparison Status", "Impacted in Deployment"
-    ]
-    for c_idx, h in enumerate(diff_headers, 1):
-        cell = ws_diff.cell(row=1, column=c_idx, value=h)
-        cell.fill = header_fill
-        cell.font = header_font
-        ws_diff.column_dimensions[cell.column_letter].width = 30
-    ws_diff.column_dimensions['A'].width = 38
-    ws_diff.column_dimensions['B'].width = 38
-
-    diff_rows.sort(key=lambda x: (0 if x["impacted"] == "YES" else 1, x["name"]))
-    for r_idx, d in enumerate(diff_rows, 2):
-        ws_diff.cell(row=r_idx, column=1, value=d["name"])
-        ws_diff.cell(row=r_idx, column=2, value=d["comp_id"])
-        ws_diff.cell(row=r_idx, column=3, value=d["type"])
-        ws_diff.cell(row=r_idx, column=4, value=d["folder"])
-        ws_diff.cell(row=r_idx, column=5, value=d["src_version"])
-        ws_diff.cell(row=r_idx, column=6, value=d["tgt_version"])
-        ws_diff.cell(row=r_idx, column=7, value=d["status"])
-        ws_diff.cell(row=r_idx, column=8, value=d["impacted"])
-    ws_diff.auto_filter.ref = ws_diff.dimensions
-
-    # 3. Impacted_Dependencies
-    hier_headers = [
-        "Differing Component", "Component ID", "Component Type", "Comparison Status",
-        "Impacted Main Process", "Main Process ID", "Intermediate Reference Chain", "Full Hierarchy Path"
-    ]
-    for c_idx, h in enumerate(hier_headers, 1):
-        cell = ws_hier.cell(row=1, column=c_idx, value=h)
-        cell.fill = header_fill
-        cell.font = header_font
-        ws_hier.column_dimensions[cell.column_letter].width = 30
-    ws_hier.column_dimensions['A'].width = 35
-    ws_hier.column_dimensions['B'].width = 38
-    ws_hier.column_dimensions['E'].width = 35
-    ws_hier.column_dimensions['F'].width = 38
-    ws_hier.column_dimensions['G'].width = 45
-    ws_hier.column_dimensions['H'].width = 110
-
-    hier_rows = []
-    seen_h = set()
-    for d in differing_components:
-        tnode, ncache = build_graph(d["comp_id"], account_id, api_url, username, token)
+    for c in changed_components:
+        cid = c["comp_id"]
+        tnode, ncache = build_graph(cid, account_id, api_url, username, token)
         paths = []
         extract_paths(tnode, [{"node": tnode}], paths)
+        comp_paths_map[cid] = (c, paths)
         for p in paths:
-            classified = classify_path(p)
-            mp = classified["main_process"]
-            mp_name = mp.name if mp else d["name"]
-            mp_id = mp.comp_id if mp else d["comp_id"]
-            chain = classified["intermediate_chain"] if len(p) > 1 else ("(Direct Process / Entrypoint)" if d["type"] == "process" else "(No Parent References)")
-            h_str = classified["hierarchy_str"]
+            if len(p) > 1:
+                classified = classify_path(p)
+                mp = classified["main_process"]
+                if mp and mp.comp_id:
+                    all_unique_mps.add(mp.comp_id)
+                    c["impacted_mps"].add(mp.comp_id)
+                    total_unique_impact_mps.add(mp.comp_id)
+            elif len(p) == 1 and c["type"] == "process":
+                all_unique_mps.add(c["comp_id"])
+                c["impacted_mps"].add(c["comp_id"])
+                total_unique_impact_mps.add(c["comp_id"])
 
-            row_t = (d["name"], d["comp_id"], d["type"], d["status"], mp_name, mp_id, chain, h_str)
-            if row_t not in seen_h:
-                seen_h.add(row_t)
-                hier_rows.append(row_t)
+    # Query active deployments for all identified main processes, primary component, and changed components
+    env_mp_deployment = {}
+    deployed_env_ids = set()
+    query_targets = list(all_unique_mps | {primary_comp_id} | {c['comp_id'] for c in changed_components})
+    for mpid in query_targets:
+        q = {
+            "QueryFilter": {
+                "expression": {
+                    "operator": "and",
+                    "nestedExpression": [
+                        {"operator": "EQUALS", "property": "componentId", "argument": [mpid]},
+                        {"operator": "EQUALS", "property": "active", "argument": ["true"]}
+                    ]
+                }
+            }
+        }
+        res_dep = call_boomi_api("DeployedPackage/query", q, account_id, api_url, username, token)
+        for d in res_dep.get("result", []):
+            eid = d.get("environmentId")
+            env_mp_deployment[(eid, mpid)] = d
+            deployed_env_ids.add(eid)
 
-    hier_rows.sort(key=lambda x: (x[0], x[4], x[6], x[7]))
-    for r_idx, r in enumerate(hier_rows, 2):
-        for c_idx, val in enumerate(r, 1):
-            ws_hier.cell(row=r_idx, column=c_idx, value=val)
+    # Environment Relevance Filtering (BEFORE report generation)
+    # An environment is relevant IF AND ONLY IF:
+    # 1. A changed component is actively deployed in that environment, OR
+    # 2. An impacted main process using the changed component is actively deployed in that environment, OR
+    # 3. The primary package component is actively deployed in that environment.
+    if selected_envs and selected_envs[0].get("id") is not None:
+        relevant_envs = [env for env in selected_envs if env.get("id") in deployed_env_ids]
+    else:
+        # Build scope (no environment ID specified)
+        relevant_envs = selected_envs
 
-    if len(hier_rows) > 1:
-        # Merge Cols A-D
-        curr_comp = None
-        start_r = 2
-        for i in range(2, len(hier_rows) + 3):
-            val = ws_hier.cell(row=i, column=2).value if i <= len(hier_rows) + 1 else None
-            if val != curr_comp:
-                if curr_comp is not None and (i - 1) > start_r:
-                    for col in range(1, 5):
-                        ws_hier.merge_cells(start_row=start_r, start_column=col, end_row=i-1, end_column=col)
-                        ws_hier.cell(row=start_r, column=col).alignment = Alignment(vertical='top')
-                curr_comp = val
-                start_r = i
+    # Cache for package manifests to inspect component build versions inside deployed packages
+    manifest_cache = {}
+    def get_deployed_manifest(pkg_id):
+        if not pkg_id:
+            return []
+        if pkg_id not in manifest_cache:
+            manifest_cache[pkg_id] = get_package_manifest(pkg_id, account_id, api_url, username, token)
+        return manifest_cache[pkg_id]
 
-        # Merge Cols E-F
-        curr_mp = None
-        start_mp_r = 2
-        for i in range(2, len(hier_rows) + 3):
-            comp_val = ws_hier.cell(row=i, column=2).value if i <= len(hier_rows) + 1 else None
-            mp_val = ws_hier.cell(row=i, column=6).value if i <= len(hier_rows) + 1 else None
-            key = (comp_val, mp_val)
-            if key != curr_mp:
-                if curr_mp is not None and curr_mp[1] is not None and (i - 1) > start_mp_r:
-                    for col in range(5, 7):
-                        ws_hier.merge_cells(start_row=start_mp_r, start_column=col, end_row=i-1, end_column=col)
-                        ws_hier.cell(row=start_mp_r, column=col).alignment = Alignment(vertical='top')
-                curr_mp = key
-                start_mp_r = i
+    # Evaluate impact ONLY in the context of relevant environments
+    env_rows_map = {}
+    all_env_rows = []
 
-    ws_hier.auto_filter.ref = ws_hier.dimensions
+    for env in relevant_envs:
+        env_id = env.get("id")
+        env_name = env.get("name", "Build Scope")
+
+        current_env_rows = []
+        seen_keys = set()
+
+        for c in changed_components:
+            cid = c["comp_id"]
+            _, paths = comp_paths_map[cid]
+
+            has_usage = False
+            for p in paths:
+                if len(p) > 1:
+                    classified = classify_path(p)
+                    mp = classified["main_process"]
+                    if mp:
+                        mp_name = mp.name
+                        mp_id = mp.comp_id
+                    else:
+                        mp_name = "(Unidentified Parent Process)"
+                        mp_id = "N/A"
+                    chain = classified["intermediate_chain"]
+                    h_str = classified["hierarchy_str"]
+
+                    # Determine deployment in this environment:
+                    if env_id:
+                        d = env_mp_deployment.get((env_id, mp_id))
+                        if not d:
+                            # Not deployed in this environment -> exclude irrelevant row
+                            continue
+                        dep_pkg_id = d.get("packageId")
+                        dep_pkg_ver = str(d.get("packageVersion", "N/A"))
+
+                        # Inspect manifest of the deployed package to find what build version of cid is deployed
+                        pkg_man = get_deployed_manifest(dep_pkg_id)
+                        dep_comp_build_ver = None
+                        for m_item in pkg_man:
+                            if m_item.get("id") == cid:
+                                dep_comp_build_ver = m_item.get("version")
+                                break
+
+                        dep_build_ver_str = str(dep_comp_build_ver) if dep_comp_build_ver is not None else "N/A"
+
+                        # Determine explicit deployment impact status
+                        if dep_build_ver_str != "N/A":
+                            if str(dep_build_ver_str) == str(c["version"]):
+                                mp_dep_status = f"DEPLOYED (Package v{dep_pkg_ver} contains New Build v{dep_build_ver_str} - Active)"
+                            elif str(dep_build_ver_str) == str(c["prev_version"]):
+                                mp_dep_status = f"DEPLOYED (Package v{dep_pkg_ver} contains Prior Build v{dep_build_ver_str} - Pending Update)"
+                            else:
+                                mp_dep_status = f"DEPLOYED (Package v{dep_pkg_ver} contains Build v{dep_build_ver_str})"
+                        else:
+                            mp_dep_status = f"DEPLOYED (Package v{dep_pkg_ver})"
+                    else:
+                        dep_pkg_ver = "N/A (Build Scope)"
+                        dep_build_ver_str = "N/A (Build Scope)"
+                        mp_dep_status = "N/A (Build Scope)"
+
+                    package_component_id = dep_pkg_id if env_id else "N/A (Build Scope)"
+                    has_usage = True
+                    r_key = (env_name, cid, mp_id, chain, h_str)
+                    if r_key not in seen_keys:
+                        seen_keys.add(r_key)
+                        row_data = {
+                            "env_name": env_name,
+                            "comp_name": c["name"],
+                            "comp_id": c["comp_id"],
+                            "comp_type": c["type"],
+                            "prev_build_version": c["prev_version"],
+                            "new_build_version": c["version"],
+                            "change": c["status"],
+                            "impact_area": mp_name,
+                            "process_id": mp_id,
+                            "package_component_id": package_component_id,
+                            "deployed_pkg_version": dep_pkg_ver,
+                            "deployed_comp_build_version": dep_build_ver_str,
+                            "dep_status": mp_dep_status,
+                            "chain": chain,
+                            "hierarchy": h_str
+                        }
+                        current_env_rows.append(row_data)
+                        all_env_rows.append(row_data)
+
+                elif len(p) == 1 and c["type"] == "process":
+                    mp_name = c["name"]
+                    mp_id = c["comp_id"]
+                    chain = "(Direct Process / Entrypoint)"
+                    h_str = f"Process: {c['name']}"
+
+                    if env_id:
+                        d = env_mp_deployment.get((env_id, mp_id))
+                        if not d:
+                            continue
+                        dep_pkg_id = d.get("packageId")
+                        dep_pkg_ver = str(d.get("packageVersion", "N/A"))
+
+                        pkg_man = get_deployed_manifest(dep_pkg_id)
+                        dep_comp_build_ver = None
+                        for m_item in pkg_man:
+                            if m_item.get("id") == cid:
+                                dep_comp_build_ver = m_item.get("version")
+                                break
+
+                        dep_build_ver_str = str(dep_comp_build_ver) if dep_comp_build_ver is not None else "N/A"
+
+                        if dep_build_ver_str != "N/A":
+                            if str(dep_build_ver_str) == str(c["version"]):
+                                mp_dep_status = f"DEPLOYED (Package v{dep_pkg_ver} contains New Build v{dep_build_ver_str} - Active)"
+                            elif str(dep_build_ver_str) == str(c["prev_version"]):
+                                mp_dep_status = f"DEPLOYED (Package v{dep_pkg_ver} contains Prior Build v{dep_build_ver_str} - Pending Update)"
+                            else:
+                                mp_dep_status = f"DEPLOYED (Package v{dep_pkg_ver} contains Build v{dep_build_ver_str})"
+                        else:
+                            mp_dep_status = f"DEPLOYED (Package v{dep_pkg_ver})"
+                    else:
+                        dep_pkg_id = None
+                        dep_pkg_ver = "N/A (Build Scope)"
+                        dep_build_ver_str = "N/A (Build Scope)"
+                        mp_dep_status = "N/A (Build Scope)"
+
+                    package_component_id = dep_pkg_id if env_id else "N/A (Build Scope)"
+                    has_usage = True
+                    r_key = (env_name, cid, mp_id, chain, h_str)
+                    if r_key not in seen_keys:
+                        seen_keys.add(r_key)
+                        row_data = {
+                            "env_name": env_name,
+                            "comp_name": c["name"],
+                            "comp_id": c["comp_id"],
+                            "comp_type": c["type"],
+                            "prev_build_version": c["prev_version"],
+                            "new_build_version": c["version"],
+                            "change": c["status"],
+                            "impact_area": mp_name,
+                            "process_id": mp_id,
+                            "package_component_id": package_component_id,
+                            "deployed_pkg_version": dep_pkg_ver,
+                            "deployed_comp_build_version": dep_build_ver_str,
+                            "dep_status": mp_dep_status,
+                            "chain": chain,
+                            "hierarchy": h_str
+                        }
+                        current_env_rows.append(row_data)
+                        all_env_rows.append(row_data)
+
+            if not has_usage:
+                d = env_mp_deployment.get((env_id, cid)) if env_id else None
+                if d or not env_id:
+                    if d:
+                        dep_pkg_id = d.get("packageId")
+                        dep_pkg_ver = str(d.get("packageVersion", "N/A"))
+                        pkg_man = get_deployed_manifest(dep_pkg_id)
+                        dep_comp_build_ver = None
+                        for m_item in pkg_man:
+                            if m_item.get("id") == cid:
+                                dep_comp_build_ver = m_item.get("version")
+                                break
+                        dep_build_ver_str = str(dep_comp_build_ver) if dep_comp_build_ver is not None else "N/A"
+                        mp_dep_status = f"DEPLOYED (Package v{dep_pkg_ver} contains Build v{dep_build_ver_str})"
+                    else:
+                        dep_pkg_id = None
+                        dep_pkg_ver = "N/A (Build Scope)"
+                        dep_build_ver_str = "N/A (Build Scope)"
+                        mp_dep_status = "N/A (Build Scope)"
+
+                    package_component_id = dep_pkg_id if env_id and d else "N/A (Build Scope)"
+                    r_key = (env_name, cid, "N/A", "(Unreferenced / Standalone Component)", "(Root Component Only)")
+                    if r_key not in seen_keys:
+                        seen_keys.add(r_key)
+                        row_data = {
+                            "env_name": env_name,
+                            "comp_name": c["name"],
+                            "comp_id": c["comp_id"],
+                            "comp_type": c["type"],
+                            "prev_build_version": c["prev_version"],
+                            "new_build_version": c["version"],
+                            "change": c["status"],
+                            "impact_area": "(No Identified Usage / Unreferenced)",
+                            "process_id": "N/A",
+                            "package_component_id": package_component_id,
+                            "deployed_pkg_version": dep_pkg_ver,
+                            "deployed_comp_build_version": dep_build_ver_str,
+                            "dep_status": mp_dep_status,
+                            "chain": "(Unreferenced / Standalone Component)",
+                            "hierarchy": f"{c['type'].capitalize()}: {c['name']} (No References Found)"
+                        }
+                        current_env_rows.append(row_data)
+                        all_env_rows.append(row_data)
+
+        if current_env_rows:
+            env_rows_map[env_name] = current_env_rows
+
+    # Build the Clean Excel Report
+    wb = Workbook()
+    thin_border = Border(left=Side(style='thin', color='D9D9D9'),
+                         right=Side(style='thin', color='D9D9D9'),
+                         top=Side(style='thin', color='D9D9D9'),
+                         bottom=Side(style='thin', color='D9D9D9'))
+
+    # Sheet 1: Impact_Summary
+    ws_sum = wb.active
+    ws_sum.title = "Impact_Summary"
+    ws_sum.views.sheetView[0].showGridLines = True
+
+    ws_sum.merge_cells("A1:H1")
+    ws_sum["A1"] = "Boomi Package Change Impact Audit Report"
+    ws_sum["A1"].font = Font(name="Calibri", size=16, bold=True, color="FFFFFF")
+    ws_sum["A1"].fill = PatternFill(start_color="002060", end_color="002060", fill_type="solid")
+    ws_sum["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    ws_sum.row_dimensions[1].height = 40
+
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    if selected_envs and selected_envs[0].get("id") is not None:
+        total_scanned = len(selected_envs)
+        rel_count = len(relevant_envs)
+        env_scope_str = f"{total_scanned} Environments Scanned"
+        env_relevant_str = f"{rel_count} Relevant Environment(s) with Active Impact ({', '.join([e.get('name') for e in relevant_envs]) if relevant_envs else 'None'})"
+    else:
+        env_scope_str = "Build Scope"
+        env_relevant_str = "Build Scope"
+
+    meta_rows = [
+        ("Audit Target / Primary Component:", f"{primary_meta.get('name')} ({primary_comp_id})"),
+        ("Package Comparison:", comparison_source_str),
+        ("Previous Package Version:", prev_label),
+        ("Latest Package Version:", new_label),
+        ("Analyzed Environment Scope:", env_scope_str),
+        ("Relevant Environments with Impact:", env_relevant_str),
+        ("Report Generated (UTC):", now_utc),
+        ("Total Manifest Components Examined:", len(all_cids)),
+        ("Changed Components Identified:", len(changed_components)),
+        ("Total Potential Impact Areas Identified (Main Processes):", len(total_unique_impact_mps))
+    ]
+
+    for idx, (label, val) in enumerate(meta_rows, start=3):
+        ws_sum.cell(row=idx, column=1, value=label).font = Font(name="Calibri", bold=True, size=11, color="1F4E78")
+        ws_sum.merge_cells(start_row=idx, start_column=2, end_row=idx, end_column=8)
+        c_val = ws_sum.cell(row=idx, column=2, value=val)
+        c_val.font = Font(name="Calibri", size=11)
+        c_val.alignment = Alignment(vertical="center")
+        ws_sum.row_dimensions[idx].height = 20
+
+    start_tbl = len(meta_rows) + 5
+    ws_sum.cell(row=start_tbl, column=1, value="Changed Components Summary").font = Font(name="Calibri", size=13, bold=True, color="002060")
+    ws_sum.row_dimensions[start_tbl].height = 25
+
+    sum_headers = [
+        "Changed Component Name", "Changed Component ID", "Component Type", "Folder",
+        "Previous Build Version", "New Build Version", "Build Change Identified", "Potential Impact Areas Count"
+    ]
+    h_row = start_tbl + 1
+    ws_sum.row_dimensions[h_row].height = 28
+    for col_idx, h in enumerate(sum_headers, start=1):
+        cell = ws_sum.cell(row=h_row, column=col_idx, value=h)
+        cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
+        cell.fill = PatternFill(start_color="002060", end_color="002060", fill_type="solid")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    curr_r = h_row + 1
+    # ONLY CHANGED COMPONENTS IN THE REPORT!
+    for c in changed_components:
+        ws_sum.cell(row=curr_r, column=1, value=c["name"]).alignment = Alignment(vertical="center")
+        ws_sum.cell(row=curr_r, column=2, value=c["comp_id"]).alignment = Alignment(vertical="center")
+        ws_sum.cell(row=curr_r, column=3, value=c["type"]).alignment = Alignment(vertical="center")
+        ws_sum.cell(row=curr_r, column=4, value=c["folder"]).alignment = Alignment(vertical="center")
+        ws_sum.cell(row=curr_r, column=5, value=c["prev_version"]).alignment = Alignment(horizontal="center", vertical="center")
+        ws_sum.cell(row=curr_r, column=6, value=c["version"]).alignment = Alignment(horizontal="center", vertical="center")
+        ws_sum.cell(row=curr_r, column=7, value=c["status"]).alignment = Alignment(horizontal="center", vertical="center")
+        ws_sum.cell(row=curr_r, column=8, value=len(c["impacted_mps"])).alignment = Alignment(horizontal="center", vertical="center")
+        for col in range(1, 9):
+            ws_sum.cell(row=curr_r, column=col).border = thin_border
+        ws_sum.row_dimensions[curr_r].height = 20
+        curr_r += 1
+
+    # Format helper for detailed impact sheets
+    def populate_impact_sheet(ws, rows):
+        ws.views.sheetView[0].showGridLines = True
+        impact_headers = [
+            "Environment", "Changed Component Name", "Changed Component ID", "Component Type",
+            "Previous Build Version", "New Build Version", "Build Change Identified",
+            "Potential Impact Area (Main Process)", "Process ID", "Package Component ID",
+            "Deployed Package Version", "Deployed Component Build Version", "Deployment & Impact Status",
+            "Intermediate Dependency Chain", "Complete Dependency Hierarchy Path"
+        ]
+        ws.row_dimensions[1].height = 28
+        for col_idx, h in enumerate(impact_headers, start=1):
+            cell = ws.cell(row=1, column=col_idx, value=h)
+            cell.font = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
+            cell.fill = PatternFill(start_color="002060", end_color="002060", fill_type="solid")
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        rows.sort(key=lambda x: (x["env_name"], x["comp_name"], x["impact_area"], x["chain"], x["hierarchy"]))
+
+        for r_idx, r in enumerate(rows, start=2):
+            ws.cell(row=r_idx, column=1, value=r["env_name"]).alignment = Alignment(vertical="top")
+            ws.cell(row=r_idx, column=2, value=r["comp_name"]).alignment = Alignment(vertical="top")
+            ws.cell(row=r_idx, column=3, value=r["comp_id"]).alignment = Alignment(vertical="top")
+            ws.cell(row=r_idx, column=4, value=r["comp_type"]).alignment = Alignment(vertical="top")
+            ws.cell(row=r_idx, column=5, value=r["prev_build_version"]).alignment = Alignment(horizontal="center", vertical="top")
+            ws.cell(row=r_idx, column=6, value=r["new_build_version"]).alignment = Alignment(horizontal="center", vertical="top")
+            ws.cell(row=r_idx, column=7, value=r["change"]).alignment = Alignment(horizontal="center", vertical="top")
+            ws.cell(row=r_idx, column=8, value=r["impact_area"]).alignment = Alignment(vertical="top")
+            ws.cell(row=r_idx, column=9, value=r["process_id"]).alignment = Alignment(vertical="top")
+            ws.cell(row=r_idx, column=10, value=r["package_component_id"]).alignment = Alignment(vertical="top")
+            ws.cell(row=r_idx, column=11, value=r["deployed_pkg_version"]).alignment = Alignment(horizontal="center", vertical="top")
+            ws.cell(row=r_idx, column=12, value=r["deployed_comp_build_version"]).alignment = Alignment(horizontal="center", vertical="top")
+            ws.cell(row=r_idx, column=13, value=r["dep_status"]).alignment = Alignment(vertical="top")
+            ws.cell(row=r_idx, column=14, value=r["chain"]).alignment = Alignment(vertical="top")
+            ws.cell(row=r_idx, column=15, value=r["hierarchy"]).alignment = Alignment(vertical="top")
+            for col in range(1, 16):
+                ws.cell(row=r_idx, column=col).border = thin_border
+            ws.row_dimensions[r_idx].height = 22
+
+        # Cell merging for readability
+        if len(rows) > 1:
+            # Merge Cols A-G (Component info)
+            curr_comp = None
+            start_r = 2
+            for i in range(2, len(rows) + 3):
+                val = (ws.cell(row=i, column=1).value, ws.cell(row=i, column=3).value) if i <= len(rows) + 1 else None
+                if val != curr_comp:
+                    if curr_comp is not None and (i - 1) > start_r:
+                        for col in range(1, 8):
+                            ws.merge_cells(start_row=start_r, start_column=col, end_row=i-1, end_column=col)
+                            ws.cell(row=start_r, column=col).alignment = Alignment(vertical='top')
+                    curr_comp = val
+                    start_r = i
+
+            # Merge Cols H-M (Process & deployment info)
+            curr_mp = None
+            start_mp_r = 2
+            for i in range(2, len(rows) + 3):
+                comp_key = (ws.cell(row=i, column=1).value, ws.cell(row=i, column=3).value) if i <= len(rows) + 1 else None
+                mp_val = ws.cell(row=i, column=9).value if i <= len(rows) + 1 else None
+                key = (comp_key, mp_val)
+                if key != curr_mp:
+                    if curr_mp is not None and curr_mp[1] not in [None, "N/A"] and (i - 1) > start_mp_r:
+                        for col in range(8, 14):
+                            ws.merge_cells(start_row=start_mp_r, start_column=col, end_row=i-1, end_column=col)
+                            ws.cell(row=start_mp_r, column=col).alignment = Alignment(vertical='top')
+                    curr_mp = key
+                    start_mp_r = i
+
+        ws.auto_filter.ref = ws.dimensions
+
+    # Detailed Sheets:
+    existing_sheet_titles = set(wb.sheetnames)
+
+    def get_unique_sheet_title(base_name):
+        cleaned = "".join([ch if ch.isalnum() else "_" for ch in base_name])[:22]
+        cand = f"{cleaned}_Impact"[:31]
+        idx = 2
+        while cand in existing_sheet_titles:
+            cand = f"{cleaned[:25]}_{idx}"[:31]
+            idx += 1
+        existing_sheet_titles.add(cand)
+        return cand
+
+    if len(relevant_envs) == 0:
+        ws_none = wb.create_sheet(title="No_Active_Deployments")
+        ws_none.views.sheetView[0].showGridLines = True
+        ws_none.merge_cells("A1:H1")
+        ws_none["A1"] = "No Active Deployments in Analyzed Environment(s)"
+        ws_none["A1"].font = Font(name="Calibri", size=14, bold=True, color="FFFFFF")
+        ws_none["A1"].fill = PatternFill(start_color="002060", end_color="002060", fill_type="solid")
+        ws_none["A1"].alignment = Alignment(horizontal="center", vertical="center")
+        ws_none.row_dimensions[1].height = 35
+        ws_none["A3"] = "None of the changed components or their impacted processes are actively deployed in the analyzed environment(s)."
+        ws_none["A3"].font = Font(name="Calibri", size=11, italic=True)
+    elif len(relevant_envs) == 1:
+        # Single relevant environment: Clean detailed sheet
+        env_single = relevant_envs[0]
+        ws_det = wb.create_sheet(title=get_unique_sheet_title(env_single.get("name", "Impact")))
+        populate_impact_sheet(ws_det, all_env_rows)
+    else:
+        # Multiple relevant environments: Consolidated sheet + per-environment sheets
+        ws_all = wb.create_sheet(title="All_Environments_Impact")
+        existing_sheet_titles.add("All_Environments_Impact")
+        populate_impact_sheet(ws_all, all_env_rows)
+
+        # Per-environment sheet for each relevant environment
+        for env in relevant_envs:
+            e_name = env.get("name", "Unknown")
+            e_rows = env_rows_map.get(e_name, [])
+            if e_rows:
+                ws_env = wb.create_sheet(title=get_unique_sheet_title(e_name))
+                populate_impact_sheet(ws_env, e_rows)
+
+    # Auto-adjust column widths across all sheets
+    for ws in wb.worksheets:
+        for col in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                if ws == ws_sum and cell.row == 1:
+                    continue
+                if cell.value:
+                    lines = str(cell.value).split("\n")
+                    for l in lines:
+                        if len(l) > max_len:
+                            max_len = len(l)
+            ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+            if ws.column_dimensions[col_letter].width > 60:
+                ws.column_dimensions[col_letter].width = 60
 
     try:
         wb.save(output_file)
         if os.path.exists(output_file):
-            print(f"Comparison Audit report generated and verified on disk: {output_file}")
+            print(f"\nPackage Change Impact report generated successfully: {output_file}")
             return True
         else:
-            print(f"ERROR: wb.save completed but file not found on disk: {output_file}")
+            print(f"ERROR: File was not created on disk: {output_file}")
             return False
     except Exception as e:
-        print(f"CRITICAL ERROR saving Comparison Workbook: {e}")
+        print(f"ERROR saving Change Impact Report workbook: {e}")
         return False
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate Boomi Component and Package Excel Audit Reports")
+    parser = argparse.ArgumentParser(description="Generate Boomi Component and Change Impact Excel Audit Reports")
     parser.add_argument("--component-id", help="Target Component ID to audit")
-    parser.add_argument("--package-id", help="Target Boomi Package ID to audit")
-    parser.add_argument("--environment-id", help="Target Environment ID (Optional)")
-    parser.add_argument("--source-env-id", help="Source Environment ID for comparison")
+    parser.add_argument("--package-id", help="Target Boomi Package ID for change impact comparison")
+    parser.add_argument("--prev-package-id", help="Optional prior Boomi Package ID to compare against (defaults to immediately previous version)")
+    parser.add_argument("--environment-id", help="Target Environment ID (Single, comma-separated IDs, or 'ALL')")
+    parser.add_argument("--inspect-package", action="store_true", help="Inspect package version details and list available environments")
+    parser.add_argument("--source-env-id", help="Source Environment ID for environment change comparison")
     parser.add_argument("--target-env-id", "--compare-environment-id", dest="target_env_id", help="Comparison/Target Environment ID")
-    parser.add_argument("--mode", choices=["BUILD", "ENVIRONMENT", "ALL_ENVIRONMENTS", "BUILD_AND_ENVIRONMENT", "BUILD_AND_ALL_ENVIRONMENTS", "PACKAGE", "COMPARE"], help="Reporting mode")
+    parser.add_argument("--mode", choices=["BUILD", "ENVIRONMENT", "ALL_ENVIRONMENTS", "BUILD_AND_ENVIRONMENT", "BUILD_AND_ALL_ENVIRONMENTS", "CHANGE_IMPACT", "PACKAGE", "COMPARE"], help="Reporting mode")
     parser.add_argument("--account-id", default=os.getenv("BOOMI_ACCOUNT_ID"), help="Boomi Account ID")
     parser.add_argument("--api-url", default=os.getenv("BOOMI_API_URL", "https://api.boomi.com"), help="Boomi Platform API URL")
     parser.add_argument("--username", default=os.getenv("BOOMI_USERNAME"), help="Boomi Username/Email")
@@ -1134,8 +1381,8 @@ if __name__ == "__main__":
         sys.stderr.write("ERROR: Missing required credentials (account-id, username, token).\n")
         sys.exit(1)
 
-    if not args.component_id and not args.package_id:
-        sys.stderr.write("ERROR: Either --component-id or --package-id must be provided.\n")
+    if not args.component_id and not args.package_id and not (args.source_env_id and args.target_env_id):
+        sys.stderr.write("ERROR: Either --component-id, --package-id, or environment comparison flags must be provided.\n")
         sys.exit(1)
 
     skill_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1143,22 +1390,30 @@ if __name__ == "__main__":
     os.makedirs(out_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
-    # Inferred mode handling
-    selected_mode = args.mode
+    # Inspect package option
+    if args.inspect_package and args.package_id:
+        success = inspect_package_and_environments(args.package_id, args.account_id, args.api_url, args.username, args.token)
+        sys.exit(0 if success else 1)
+
+    # Inferred mode handling (map legacy PACKAGE/COMPARE to CHANGE_IMPACT)
+    if args.mode in ["PACKAGE", "COMPARE"]:
+        selected_mode = "CHANGE_IMPACT"
+    else:
+        selected_mode = args.mode
+
     if not selected_mode:
         if args.source_env_id and args.target_env_id:
-            selected_mode = "COMPARE"
+            selected_mode = "CHANGE_IMPACT"
         elif args.package_id:
-            selected_mode = "PACKAGE"
+            selected_mode = "CHANGE_IMPACT"
         elif args.environment_id:
             selected_mode = "ENVIRONMENT"
         else:
             selected_mode = "BUILD"
 
-    # 1. Environment Comparison Mode
-    if selected_mode == "COMPARE" or args.source_env_id:
-        if not args.source_env_id or not args.target_env_id:
-            # Check available deployments to guide user selection
+    # Capability 2: Package Change Impact Analysis (Package or Environment comparison)
+    if selected_mode == "CHANGE_IMPACT" or args.package_id or (args.source_env_id and args.target_env_id):
+        if args.source_env_id and not args.target_env_id:
             target_cid = args.component_id
             if not target_cid and args.package_id:
                 p_meta = get_package_metadata(args.package_id, args.account_id, args.api_url, args.username, args.token)
@@ -1185,7 +1440,7 @@ if __name__ == "__main__":
                     eid = d.get("environmentId")
                     dep_list.append(f"- {env_map.get(eid, eid)} ({eid}) [Pkg v{d.get('packageVersion')}]")
 
-            print("\nERROR: Comparison mode requires both --source-env-id and --target-env-id.")
+            print("\nERROR: Environment comparison requires both --source-env-id and --target-env-id.")
             if dep_list:
                 print("Active deployments found for this component across environments:")
                 for item in dep_list:
@@ -1195,22 +1450,24 @@ if __name__ == "__main__":
                 print("Please provide --source-env-id and --target-env-id to perform the comparison.")
             sys.exit(1)
 
-        comp_target = args.component_id or args.package_id
-        compare_out_file = os.path.join(out_dir, f"Package_Comparison_Report_{comp_target}_{timestamp}.xlsx")
-        success = generate_comparison_excel(args.component_id, args.package_id, args.source_env_id, args.target_env_id, args.account_id, args.api_url, args.username, args.token, compare_out_file)
-        if not success:
-            print(f"No comparison differences or deployment records found between the selected environments.")
-        sys.exit(0)
+        target_file_id = args.package_id or args.component_id or f"{args.source_env_id}_vs_{args.target_env_id}"
+        ci_out_file = os.path.join(out_dir, f"Change_Impact_Report_{target_file_id}_{timestamp}.xlsx")
+        success = generate_change_impact_excel(
+            args.component_id,
+            args.package_id,
+            args.prev_package_id,
+            args.environment_id,
+            args.source_env_id,
+            args.target_env_id,
+            args.account_id,
+            args.api_url,
+            args.username,
+            args.token,
+            ci_out_file
+        )
+        sys.exit(0 if success else 1)
 
-    # 2. Package Audit Mode
-    if selected_mode == "PACKAGE" or args.package_id:
-        pkg_out_file = os.path.join(out_dir, f"Package_Audit_Report_{args.package_id}_{timestamp}.xlsx")
-        success = generate_package_excel(args.package_id, args.environment_id, args.account_id, args.api_url, args.username, args.token, pkg_out_file)
-        if not success:
-            print(f"No audit data was found for the requested package: {args.package_id}")
-        sys.exit(0)
-
-    # 3. Component Audit Mode (Existing Behavior - 100% Unchanged)
+    # Capability 1: Component Audit Mode (Existing Behavior - 100% UNCHANGED)
     print(f"Starting audit for component: {args.component_id}...")
     target_node, node_cache = build_graph(args.component_id, args.account_id, args.api_url, args.username, args.token)
     
